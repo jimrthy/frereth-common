@@ -9,8 +9,8 @@
             [component-dsl.system :as cpt-dsl]
             [schema.core :as s]
             [taoensso.timbre :as log])
-  (:import [com.stuartsierra.component SystemMap]
-           [org.zeromq ZMQException]))
+  (:import [clojure.lang ExceptionInfo]
+           [com.stuartsierra.component SystemMap]))
 
 (defn mock-structure
   []
@@ -159,7 +159,7 @@ I write, but I know better."
         (finally
           (try
             (component/stop system)
-            (catch ZMQException ex
+            (catch ExceptionInfo ex
               (log/error ex "Failed to shut down the system at the end of the message-from-outside test")
               (is (not ex)))))))))
 

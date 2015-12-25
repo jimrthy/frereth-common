@@ -25,9 +25,9 @@
                  ;; this through client. And, if it doesn't, renderer
                  ;; will need this to talk to the stand-alone "client."
                  ;; So the short answer is "Yes"
-                 [com.jimrthy/cljeromq "0.1.0-SNAPSHOT" :exclusions [com.stuartsierra/component
-                                                                     org.clojure/clojure
-                                                                     prismatic/schema]]
+                 [com.jimrthy/cljeromq "0.1.1-clj-zmq-SNAPSHOT" :exclusions [com.stuartsierra/component
+                                                                             org.clojure/clojure
+                                                                             prismatic/schema]]
                  [com.jimrthy/component-dsl "0.1.1-SNAPSHOT" :exclusions [org.clojure/clojure]]
                  [com.taoensso/timbre "4.1.4" :exclusions [org.clojure/clojure
                                                            org.clojure/tools.reader]]
@@ -53,8 +53,8 @@
   :plugins []
 
   :profiles {:dev {:dependencies [[org.clojure/java.classpath "0.2.3"
-                                   :exclusions [org.clojure/clojure]]]
-                   :source-paths ["dev"]
-                   :plugins [[org.clojure/tools.namespace "0.2.11" :exclusions [org.clojure/clojure]]]}
+                                   :exclusions [org.clojure/clojure]]
+                                  [org.clojure/tools.namespace "0.2.11" :exclusions [org.clojure/clojure]]]
+                   :source-paths ["dev"]}
              :uberjar {:aot :all}}
   :repl-options {:init-ns user})

@@ -6,7 +6,9 @@
             [schema.core :as s]
             [taoensso.timbre :as log])
   (:import [clojure.lang ExceptionInfo]
-           [org.zeromq ZMQException]))
+           ;; This is really where the experimental switch to zmq-jni
+           ;; should happen in a branch
+           #_[org.zeromq ZMQException]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Schema
@@ -88,7 +90,7 @@
          (mq/set-linger! socket 0)
          (mq/close! socket)
          (assoc this :socket nil)
-         (catch ZMQException ex
+         (catch ExceptionInfo ex
            (log/error ex "Failed to close socket:" socket
                       "\nAre you trying to stop this a second time?"
                       "\n(if so, you probably have a bug where you should"
