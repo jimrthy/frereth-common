@@ -29,9 +29,9 @@
                                                                              org.clojure/clojure
                                                                              prismatic/schema]]
                  [com.jimrthy/component-dsl "0.1.1-SNAPSHOT" :exclusions [org.clojure/clojure]]
-                 [com.taoensso/timbre "4.1.4" :exclusions [org.clojure/clojure
+                 [com.taoensso/timbre "4.2.0" :exclusions [org.clojure/clojure
                                                            org.clojure/tools.reader]]
-                 [fullcontact/full.async "0.8.18" :exclusions [org.clojure/clojure
+                 [fullcontact/full.async "0.9.0" :exclusions [org.clojure/clojure
                                                                org.clojure/core.async]]
                  ;; This has been deprecated.
                  ;; TODO: Switch to hara
@@ -41,12 +41,14 @@
                  ;; This is screwing up EDN serialization
                  ;; In particular dates.
                  ;; TODO: Make it ignore those
+                 ;; Actually, by now, it seems like there should really be a newer
+                 ;; version that fixes the problem so it's no longer an issue
                  #_[mvxcvi/puget "0.8.1" :exclusions [org.clojure/clojure]]
                  [org.clojure/clojure "1.8.0-RC4"]
                  [org.clojure/core.async "0.2.374" :exclusions [org.clojure/clojure]]
-                 [org.clojure/tools.reader "0.10.0" :exclusions [org.clojure/clojure]]
+                 [org.clojure/tools.reader "1.0.0-alpha1" :exclusions [org.clojure/clojure]]
                  [prismatic/plumbing "0.5.2"]
-                 [prismatic/schema "1.0.3"]]
+                 [prismatic/schema "1.0.4"]]
 
   :jvm-opts [~(str "-Djava.library.path=/usr/local/lib:" (System/getenv "LD_LIBRARY_PATH"))]
 
