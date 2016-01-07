@@ -40,7 +40,7 @@
                  ;; In particular dates.
                  ;; TODO: Make it ignore those
                  #_[mvxcvi/puget "0.8.1" :exclusions [org.clojure/clojure]]
-                 [org.clojure/clojure "1.7.0"]
+                 [org.clojure/clojure "1.8.0-RC4"]
                  [org.clojure/core.async "0.1.346.0-17112a-alpha" :exclusions [org.clojure/clojure]]
                  ;; Desperately want something like this version for offer!
                  ;; Q: Where can I find it?
