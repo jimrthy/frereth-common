@@ -13,7 +13,8 @@ Strongly inspired by lynaghk's zmq-async"
             [ribol.core :refer (raise)]
             [schema.core :as s]
             [taoensso.timbre :as log])
-  (:import [com.frereth.common.zmq_socket SocketDescription]))
+  (:import [clojure.lang ExceptionInfo]
+           [com.frereth.common.zmq_socket SocketDescription]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Schema
@@ -508,7 +509,7 @@ Send a duplicate stopper ("
             (recur (mq/poll poller five-minutes)))))
       ;; TODO: Switch to mq/zmq-exception
       ;; Or maybe just rename that so I can use mq/exception
-      (catch org.zeromq.ZMQException ex
+      (catch ExceptionInfo ex
         (log/error ex "Unhandled 0mq Exception. 0mq loop exiting")
         :unhandled-0mq-exception))))
 
@@ -519,7 +520,7 @@ Send a duplicate stopper ("
   [{:keys [interface ->zmq-sock ex-chan _name]
     :as component}]
   (let [{:keys [ex-sock external-reader externalwriter]} interface
-        poller (mq/poller 2)]
+        poller (mq/poll-item-array 2)]
     (mq/register-socket-in-poller! poller (:socket ex-sock))
     (mq/register-socket-in-poller! poller ->zmq-sock)
     (go-try
@@ -531,7 +532,7 @@ Send a duplicate stopper ("
        (let [result (actual-zmq-loop component poller)]
          (comment) (log/debug "Cleaning up 0mq Event Loop")
          result)
-       (catch org.zeromq.ZMQException ex
+       (catch ExceptionInfo ex
          (let [tb (->> ex .getStackTrace vec (map #(str % "\n")))
                msg (.getMessage ex)]
            (log/error ex msg "\n" tb))

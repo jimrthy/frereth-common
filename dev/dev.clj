@@ -1,6 +1,8 @@
 (ns dev
   "TODO: Really should figure out a way to share all the common pieces
-  (hint, hint)"
+  (my best guess about what that actually means is that I think it would
+  be convenient for dependent projects to inherit all these into their
+  dev ns)"
   (:require [cljeromq.core :as mq]
             [clojure.core.async :as async]
             [clojure.edn :as edn]

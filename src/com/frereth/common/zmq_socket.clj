@@ -6,7 +6,9 @@
             [schema.core :as s]
             [taoensso.timbre :as log])
   (:import [clojure.lang ExceptionInfo]
-           [org.zeromq ZMQException]))
+           ;; This is really where the experimental switch to zmq-jni
+           ;; should happen in a branch
+           #_[org.zeromq ZMQException]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Schema
@@ -61,11 +63,12 @@
    (if-not socket
      (do
        (assert ctx "Can't do anything without a Messaging Context")
-       (comment (log/debug "Getting ready to try to start a"
-                  sock-type
-                  "socket based on context\n"
-                  (util/pretty ctx)
-                  "a" (class ctx)))
+       (assert url "Nowhere to connect")
+       (comment) (log/debug "Getting ready to try to start a"
+                            sock-type
+                            "socket based on context\n"
+                            (util/pretty ctx)
+                            "a" (class ctx))
        (let [sock (mq/socket! (:ctx ctx) sock-type)]
          (try
            (let [uri (mq/connection-string url)]
@@ -87,7 +90,7 @@
          (mq/set-linger! socket 0)
          (mq/close! socket)
          (assoc this :socket nil)
-         (catch ZMQException ex
+         (catch ExceptionInfo ex
            (log/error ex "Failed to close socket:" socket
                       "\nAre you trying to stop this a second time?"
                       "\n(if so, you probably have a bug where you should"
