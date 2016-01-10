@@ -82,6 +82,9 @@ This is almost definitely a bug"
                               "'"))
               result))))
       (do
+        ;; Actually, the distinction is that a failed read sets errno.
+        ;; Handle that by converting it to an exception at the cljeromq layer
+        ;; so we don't actually have to worry about it here.
         (let [msg (str "This is fun.\nThe only distinction between an initial"
                        "NULL separator\nand no message at all seems to be whether"
                        "there are multiple frames")]
@@ -153,7 +156,6 @@ This is almost definitely a bug"
 
 (s/defn dealer-send!
   "For the very simplest scenario, just mimic the req/rep empty address frames"
-  ;; TODO: Add an arity that defaults to nil flags
   ([s :- mq/Socket
     frames :- fr-sch/byte-arrays
     flags :- fr-sch/korks]
@@ -161,14 +163,16 @@ This is almost definitely a bug"
      ;; Separator frame
      ;; In theory, this could just be acting as a
      ;; proxy and forwarding along messages.
+     ;; (i.e. without mucking around w/ address frames)
      ;; In practice, I don't see that use case
      ;; ever happening here.
      (mq/send! s (byte-array 0) more-flags)
      (doseq [frame (butlast frames)]
-       (mq/send! s frame more-flags))
+       (mq/send! s (util/serialize frame) more-flags))
      (log/debug "Wrapping up dealer send w/ final frame:\n" (last frames)
                 "\na " (class (last frames)))
-     (mq/send! s (util/serialize (last frames)) flags)))
+     (mq/send! s (util/serialize (last frames)) flags)
+     (log/debug "Frames sent")))
   ([s :- mq/Socket
     frames :- fr-sch/byte-arrays]
    (dealer-send! s frames [])))
@@ -191,13 +195,16 @@ This is almost definitely a bug"
 
        (if (seq? addresses)
          (doseq [addr addresses]
+           ;; Q: Do I need to serialize the addr?
+           ;; Surely each of those is just a byte-array so I don't
+           ;; have to worry about it
            (mq/send! sock addr more-flags)))
        ;; Note that dealer-send will account for the NULL separator
        (if (string? contents)
          (dealer-send! sock [contents] flags)
          (if (or (seq? contents) (vector? contents))
            (dealer-send! sock contents flags)
-           (dealer-send! sock[contents] flags)))))))
+           (dealer-send! sock [contents] flags)))))))
 
 (comment
   (let [ctx (mq/context 3)

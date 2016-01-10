@@ -505,7 +505,7 @@ Send a duplicate stopper ("
                 (log/info (:_name component) "Killed by" received-internal?)
                 :exited-successfully)))
           (do
-            (log/debug _name ": 0mq Event Loop: Heartbeat")
+            (log/debug _name ": 0mq Event Loop: Internal Heartbeat")
             (recur (mq/poll poller five-minutes)))))
       ;; TODO: Switch to mq/zmq-exception
       ;; Or maybe just rename that so I can use mq/exception
@@ -515,14 +515,12 @@ Send a duplicate stopper ("
 
 (s/defn
   ^:always-validate
-  run-zmq-loop!
-  :- fr-sch/async-channel
-  [{:keys [interface ->zmq-sock ex-chan _name]
-    :as component}]
+  run-zmq-loop! :- fr-sch/async-channel
+  [{:keys [interface ->zmq-sock ex-chan _name] :as component}]
   (let [{:keys [ex-sock external-reader externalwriter]} interface
-        poller (mq/poll-item-array 2)]
-    (mq/register-socket-in-poller! poller (:socket ex-sock))
-    (mq/register-socket-in-poller! poller ->zmq-sock)
+        polling-sockets {(:socket ex-sock) :poll-in
+                         ->zmq-sock :poll-in}
+        poller (mq/socket-poller polling-sockets)]
     (go-try
      (comment (log/debug "Entering 0mq event thread"))
      (try
