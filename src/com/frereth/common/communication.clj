@@ -49,26 +49,43 @@ wouldn't want this to handle the marshalling?"
 This is almost definitely a bug"
   [s :- mq/Socket
    flags :- fr-sch/korks]
-  (log/debug "read-all: Top")
+  (log/debug "frereth.common.communication/read-all: Top")
   ;; It's very tempting to just do recv! here,
   ;; but callers may not need/want to take the time
   ;; to do the string conversion.
   ;; Besides, that's pretty silly for the initial
   ;; address/identifier frame(s)
   (when-let [initial-frame (mq/raw-recv! s :dont-wait)]
-    (loop [acc [initial-frame]
-           more? (mq/has-more? s)]
-      (if more?
-        (do
-          (log/debug "read-all: Reading more")
-          (recur (conj acc (mq/raw-recv! s flags))
-                 (mq/has-more? s)))
-        (do
-          (when-let [result (seq acc)]
-            (println "Incoming: " result)
-            (println "has: " (count result) "entries")
-            (log/debug "read-all: Done. Incoming:\n" (map #(String. %) result))
-            result))))))
+    (let [msg (str "frereth.common.communication/read-all!\n"
+                   "Initial Frame: '" initial-frame "' a"
+                   (class initial-frame)
+                   "\nString value:\n'"
+                   (String. initial-frame) "'\n"
+                   "Length: " (count initial-frame))]
+      (log/debug msg))
+    (if (mq/has-more? s)
+      (loop [acc [initial-frame]
+             more? (mq/has-more? s)]
+        (if more?
+          (do
+            (log/debug "read-all: Reading more")
+            (recur (conj acc (mq/raw-recv! s flags))
+                   (mq/has-more? s)))
+          (do
+            (when-let [result (seq acc)]
+              (println (str "frereth.common.communication/read-all received: " result
+                            " has: " (count result) " entries"))
+              (log/debug (str "read-all: Received "
+                              (count result)
+                              "entries.\nIncoming:\n'"
+                              (doall (map #(String. %) result))
+                              "'"))
+              result))))
+      (do
+        (let [msg (str "This is fun.\nThe only distinction between an initial"
+                       "NULL separator\nand no message at all seems to be whether"
+                       "there are multiple frames")]
+          (log/debug msg))))))
 
 (s/defn extract-router-message :- router-message
   "Note that this limits the actual message to 1 frame of EDN"
@@ -126,7 +143,12 @@ This is almost definitely a bug"
    (when-let [frames (read-all! s flags)]
      ;; Assume we aren't proxying. Drop the NULL separator
      (let [content (drop 1 frames)]
-       (assert (= 1 (count content)))
+       (when-not (= 1 (count content))
+         (let [msg (str "Dealer socket just received "
+                        (count frames)
+                        "frame\nExpected exactly 2 (counting the NULL separator from the missing address)\nGot:"
+                        (doall (map pr-str content)))]
+           (assert false msg)))
        (-> content first util/deserialize)))))
 
 (s/defn dealer-send!
