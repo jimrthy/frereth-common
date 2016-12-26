@@ -1,6 +1,7 @@
 (ns com.frereth.common.protocol
   "Centralize the communications hand-shake layer"
   (:require [clojure.spec :as s]
+            [clojure.spec.gen :as gen]
             [manifold.deferred :as d]
             [manifold.stream :as stream])
   (:import clojure.lang.ExceptionInfo))
@@ -42,7 +43,11 @@
   [strm timeout dscr]
   (fn [_]
     (let [spec (::spec dscr)
-          msg "This needs to be generated, somehow"]
+          generator-override (::client-gen dscr)
+          msg (gen/generate (if generator-override
+                              (s/with-gen (s/gen spec)
+                                generator-override)
+                              (s/gen spec)))]
       (stream/try-put! strm msg timeout ::timeout))))
 
 (defmethod -client-step-builder ::server->client
@@ -55,12 +60,22 @@
        (when-not (s/valid? spec response)
          (throw (ex-info (::problem dscr) {:problem (s/explain spec response)})))))])
 
+(defn build-steps
+  [builder strm timeout step-descriptions]
+  (mapcat (partial builder strm timeout)
+          step-descriptions))
+
 (defn protocol-agreement
   [strm builder timeout step-descriptions]
-  (let [steps (mapcat (partial builder strm timeout)
-                      step-descriptions)]
-    (-> strm
-        (d/chain steps)
+  (let [lazy-steps (build-steps builder strm timeout step-descriptions)
+        steps (vector lazy-steps)]
+    ;; This next line's failing with
+    ;; IllegalArgumentException Don't know how to create ISeq
+    ;; from: com.frereth.common.protocol$eval29647$fn__29648$fn__29649
+    ;; clojure.lang.RT.seqFrom (RT.java:547)
+    (println "Getting ready to chain together" steps)
+    (println "onto" strm)
+    (-> (apply d/chain strm steps)
         (d/catch ExceptionInfo #(println "Whoops:" %))
         (d/catch RuntimeException #(println "How'd I miss:" %))
         (d/catch Exception #(println "Major oops:" %)))))
@@ -95,13 +110,31 @@
   []
   [{::direction ::client->server
     ::spec #(= % ::ohai)
+    ::client-gen #(s/gen #{::ohai})
     ::problem "Illegal greeting"}
    {::direction ::server->client
-    ::spec #(= % ::orly?)
+    ::spec (s/and keyword? #(= % ::orly?))
+    ::server-gen #(s/gen #{::orly?})
     ::problem "Broken handshake"}
    {::direction ::client->server
-    ::spec ::icanhaz}
+    ::spec ::icanhaz
+    ::client-gen #(s/gen {:frereth [0 0 1]})}
    {::direction ::server->client
+    ;; This spec is too loose.
+    ;; It shall pick one of the versions suggested
+    ;; by the client in the previous step.
+    ;; This approach seems to fall apart here
     ::spec (s/or :match (s/and ::protocol-versions
                                #(= 1 (count %)))
-                 :fail #(= % ::lolz))}])
+                 :fail #(= % ::lolz))
+    ::server-gen #(s/gen {:frereth [0 0 1]})}])
+
+(defn client-version-protocol
+  [strm timeout]
+  (client-protocol-agreement strm timeout (version-contract)))
+
+(comment
+  ;; Trying to call client-version-protocol is throwing a fairly
+  ;; cryptic exception/stack-trace that seems to center around
+  ;; this:
+  (build-steps -client-step-builder (future) 500 (version-contract)))
