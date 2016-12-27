@@ -150,7 +150,7 @@ on-realized handlers?"
                  :fail #(= % ::lolz))
     ::server-gen (fn [versions]
                    (if (contains? versions :frereth)
-                     (-> versions :frereth last)
+                     {:frereth (-> versions :frereth last)}
                      ::lolz))}])
 
 (defn client-version-protocol
