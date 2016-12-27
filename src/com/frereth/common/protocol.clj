@@ -1,7 +1,6 @@
 (ns com.frereth.common.protocol
   "Centralize the communications hand-shake layer"
-  (:require [clojure.core.async :as async]  ;; FIXME: Debug only
-            [clojure.spec :as s]
+  (:require [clojure.spec :as s]
             [clojure.spec.gen :as gen]
             [manifold.deferred :as d]
             [manifold.stream :as stream])
@@ -57,9 +56,11 @@
 (defn build-received-validator
   [dscr]
   (fn [recvd]
-    (let [spec (::spec dscr)]
-      (when-not (s/valid? spec recvd)
-        (throw (ex-info (::problem dscr) {:problem (s/explain spec recvd)}))))))
+    (if recvd
+      (let [spec (::spec dscr)]
+        (when-not (s/valid? spec recvd)
+          (throw (ex-info (::problem dscr) {:problem (s/explain spec recvd)}))))
+      (throw (ex-info "Stream closed unexpectedly" {})))))
 
 (defmethod -client-step-builder ::server->client
   [strm timeout dscr]
@@ -75,8 +76,13 @@
                     r
                     (build-received-validator dscr))]
     (if-not (contains? dscr ::initial-step)
-      [(build-prev-timeout-checker) responder]
-      [responder])))
+      [stream/take! (build-prev-timeout-checker strm timeout) responder]
+      [stream/take! responder])))
+
+(defmethod -server-step-builder ::server->client
+  [strm timeout dscr]
+  [(build-prev-timeout-checker strm timeout)
+   (::server-gen dscr)])
 
 (defn build-steps
   "Create a list of the functions to add to the chain
@@ -90,8 +96,8 @@ on-realized handlers?"
 (defn protocol-agreement
   [strm builder timeout step-descriptions]
   (let [lazy-steps (build-steps builder strm timeout step-descriptions)
-        ;; Q: Do I need this? Or can I just use lazy-steps?
-        steps (vector lazy-steps)]
+        ;; TODO: Ditch this and just use lazy-steps
+        steps (vec lazy-steps)]
     (-> (apply d/chain strm steps)
         (d/catch ExceptionInfo #(println "Whoops:" %))
         (d/catch RuntimeException #(println "How'd I miss:" %))
@@ -162,12 +168,11 @@ on-realized handlers?"
   (server-protocol-agreement strm timeout (version-contract)))
 
 (comment
-  (server-version-protocol (future) 500)
-  (client-version-protocol (future) 500)
-  (client-protocol-agreement (future) 500 (version-contract))
-  (let [deferred (async/chan)
-        steps
-        #_(vector) (build-steps -client-step-builder deferred 500 (version-contract))]
+  (server-version-protocol (stream/stream) 500)
+  (client-version-protocol (stream/stream) 500)
+  (client-protocol-agreement (stream/stream) 500 (version-contract))
+  (let [deferred (stream/stream)
+        steps (build-steps -client-step-builder deferred 500 (version-contract))]
     (apply d/chain deferred steps))
 
   )
