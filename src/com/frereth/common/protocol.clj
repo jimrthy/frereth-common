@@ -1,6 +1,7 @@
 (ns com.frereth.common.protocol
   "Centralize the communications hand-shake layer"
-  (:require [clojure.spec :as s]
+  (:require [clojure.core.async :as async]  ;; FIXME: Debug only
+            [clojure.spec :as s]
             [clojure.spec.gen :as gen]
             [manifold.deferred :as d]
             [manifold.stream :as stream])
@@ -41,26 +42,47 @@
 
 (defmethod -client-step-builder ::client->server
   [strm timeout dscr]
-  [(fn [_]
+  [(fn [x]
       (let [spec (::spec dscr)
-            generator-override (::client-gen dscr)
-            msg (gen/generate (if generator-override
-                                (s/with-gen (s/gen spec)
-                                  generator-override)
-                                (s/gen spec)))]
+            generator (::client-gen dscr)
+            msg (generator x)]
         (stream/try-put! strm msg timeout ::timeout)))])
+
+(defn build-prev-timeout-checker
+  [strm timeout]
+  (fn [sent]
+    (if (not= sent ::timeout)
+      (stream/try-take! strm ::drained timeout ::timeout))))
+
+(defn build-received-validator
+  [dscr]
+  (fn [recvd]
+    (let [spec (::spec dscr)]
+      (when-not (s/valid? spec recvd)
+        (throw (ex-info (::problem dscr) {:problem (s/explain spec recvd)}))))))
 
 (defmethod -client-step-builder ::server->client
   [strm timeout dscr]
-  [(fn [sent]
-     (if (not= sent ::timeout)
-       (stream/try-take! strm ::drained timeout ::timeout)))
-   (fn [response]
-     (let [spec (::spec dscr)]
-       (when-not (s/valid? spec response)
-         (throw (ex-info (::problem dscr) {:problem (s/explain spec response)})))))])
+  ;; This assumes that the client always initiates the sequence.
+  ;; The first thing we always have to do for each step is to
+  ;; verify that the
+  [(build-prev-timeout-checker strm timeout)
+   (build-received-validator dscr)])
+
+(defmethod -server-step-builder ::client->server
+  [strm timeout dscr]
+  (let [responder (if-let [r (::server-gen dscr)]
+                    r
+                    (build-received-validator dscr))]
+    (if-not (contains? dscr ::initial-step)
+      [(build-prev-timeout-checker) responder]
+      [responder])))
 
 (defn build-steps
+  "Create a list of the functions to add to the chain
+
+Q: Is this really cleaner than setting up a sequence of
+on-realized handlers?"
   [builder strm timeout step-descriptions]
   (mapcat (partial builder strm timeout)
           step-descriptions))
@@ -68,13 +90,8 @@
 (defn protocol-agreement
   [strm builder timeout step-descriptions]
   (let [lazy-steps (build-steps builder strm timeout step-descriptions)
+        ;; Q: Do I need this? Or can I just use lazy-steps?
         steps (vector lazy-steps)]
-    ;; This next line's failing with
-    ;; IllegalArgumentException Don't know how to create ISeq
-    ;; from: com.frereth.common.protocol$eval29647$fn__29648$fn__29649
-    ;; clojure.lang.RT.seqFrom (RT.java:547)
-    (println "Getting ready to chain together" steps)
-    (println "onto" strm)
     (-> (apply d/chain strm steps)
         (d/catch ExceptionInfo #(println "Whoops:" %))
         (d/catch RuntimeException #(println "How'd I miss:" %))
@@ -109,16 +126,17 @@
   "Declaration of the handshake to allow client and server to agree on handling the next pieces"
   []
   [{::direction ::client->server
+    ::initial-step true
     ::spec #(= % ::ohai)
-    ::client-gen #(s/gen #{::ohai})
+    ::client-gen (fn [_] ::ohai)
     ::problem "Illegal greeting"}
    {::direction ::server->client
     ::spec (s/and keyword? #(= % ::orly?))
-    ::server-gen #(s/gen #{::orly?})
+    ::server-gen (fn [_] ::orly?)
     ::problem "Broken handshake"}
    {::direction ::client->server
     ::spec ::icanhaz
-    ::client-gen #(s/gen {:frereth [0 0 1]})}
+    ::client-gen (fn [_] {:frereth [0 0 1]})}
    {::direction ::server->client
     ;; This spec is too loose.
     ;; It shall pick one of the versions suggested
@@ -127,18 +145,29 @@
     ::spec (s/or :match (s/and ::protocol-versions
                                #(= 1 (count %)))
                  :fail #(= % ::lolz))
-    ::server-gen #(s/gen {:frereth [0 0 1]})}])
+    ::server-gen (fn [versions]
+                   (if (contains? versions :frereth)
+                     ;; And this shows a weakness of this approach:
+                     ;; Client needs to be able to support multiple
+                     ;; versions of the same basic protocol
+                     (:frereth versions)
+                     ::lolz))}])
 
 (defn client-version-protocol
   [strm timeout]
   (client-protocol-agreement strm timeout (version-contract)))
 
+(defn server-version-protocol
+  [strm timeout]
+  (server-protocol-agreement strm timeout (version-contract)))
+
 (comment
-  ;; Trying to call client-version-protocol is throwing a fairly
-  ;; cryptic exception/stack-trace that seems to center around
-  ;; this:
-  (build-steps -client-step-builder (future) 500 (version-contract))
-  (-client-step-builder (future) 500 (first (version-contract)))
-  (-client-step-builder (future) 500 (second (version-contract)))
-  (mapcat (partial -client-step-builder (future) 500) (version-contract))
+  (server-version-protocol (future) 500)
+  (client-version-protocol (future) 500)
+  (client-protocol-agreement (future) 500 (version-contract))
+  (let [deferred (async/chan)
+        steps
+        #_(vector) (build-steps -client-step-builder deferred 500 (version-contract))]
+    (apply d/chain deferred steps))
+
   )
