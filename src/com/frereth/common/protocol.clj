@@ -41,14 +41,14 @@
 
 (defmethod -client-step-builder ::client->server
   [strm timeout dscr]
-  (fn [_]
-    (let [spec (::spec dscr)
-          generator-override (::client-gen dscr)
-          msg (gen/generate (if generator-override
-                              (s/with-gen (s/gen spec)
-                                generator-override)
-                              (s/gen spec)))]
-      (stream/try-put! strm msg timeout ::timeout))))
+  [(fn [_]
+      (let [spec (::spec dscr)
+            generator-override (::client-gen dscr)
+            msg (gen/generate (if generator-override
+                                (s/with-gen (s/gen spec)
+                                  generator-override)
+                                (s/gen spec)))]
+        (stream/try-put! strm msg timeout ::timeout)))])
 
 (defmethod -client-step-builder ::server->client
   [strm timeout dscr]
@@ -137,4 +137,8 @@
   ;; Trying to call client-version-protocol is throwing a fairly
   ;; cryptic exception/stack-trace that seems to center around
   ;; this:
-  (build-steps -client-step-builder (future) 500 (version-contract)))
+  (build-steps -client-step-builder (future) 500 (version-contract))
+  (-client-step-builder (future) 500 (first (version-contract)))
+  (-client-step-builder (future) 500 (second (version-contract)))
+  (mapcat (partial -client-step-builder (future) 500) (version-contract))
+  )
