@@ -1,7 +1,6 @@
 (ns com.frereth.common.protocol
   "Centralize the communications hand-shake layer"
   (:require [clojure.spec :as s]
-            [clojure.spec.gen :as gen]
             [manifold.deferred :as d]
             [manifold.stream :as stream])
   (:import clojure.lang.ExceptionInfo))
@@ -95,10 +94,8 @@ on-realized handlers?"
 
 (defn protocol-agreement
   [strm builder timeout step-descriptions]
-  (let [lazy-steps (build-steps builder strm timeout step-descriptions)
-        ;; TODO: Ditch this and just use lazy-steps
-        steps (vec lazy-steps)]
-    (-> (apply d/chain strm steps)
+  (let [lazy-steps (build-steps builder strm timeout step-descriptions)]
+    (-> (apply d/chain strm lazy-steps)
         (d/catch ExceptionInfo #(println "Whoops:" %))
         (d/catch RuntimeException #(println "How'd I miss:" %))
         (d/catch Exception #(println "Major oops:" %)))))
@@ -142,21 +139,18 @@ on-realized handlers?"
     ::problem "Broken handshake"}
    {::direction ::client->server
     ::spec ::icanhaz
-    ::client-gen (fn [_] {:frereth [0 0 1]})}
+    ::client-gen (fn [_] {:frereth [[0 0 1]]})}
    {::direction ::server->client
     ;; This spec is too loose.
     ;; It shall pick one of the versions suggested
     ;; by the client in the previous step.
-    ;; This approach seems to fall apart here
+    ;; Q: How can I document that formally?
     ::spec (s/or :match (s/and ::protocol-versions
                                #(= 1 (count %)))
                  :fail #(= % ::lolz))
     ::server-gen (fn [versions]
                    (if (contains? versions :frereth)
-                     ;; And this shows a weakness of this approach:
-                     ;; Client needs to be able to support multiple
-                     ;; versions of the same basic protocol
-                     (:frereth versions)
+                     (-> versions :frereth last)
                      ::lolz))}])
 
 (defn client-version-protocol
