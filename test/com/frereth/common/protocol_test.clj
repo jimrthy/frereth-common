@@ -32,6 +32,10 @@
                         #(stream/put! server-strm %)
                         (fn [_] stream/take! server-strm) ;; best match
                         #(stream/put! client-strm %))
+        ;; outcome is really boring in this scenario, since stream/put!
+        ;; derefs to true on success.
+        ;; This is one area where implementing this as FSMs would be much more satisfying.
+        ;; Then I could know that I've reached an end state.
         outcome (deref xchng 1500 ::timeout)]
     (is outcome)
     (is (not= outcome ::timeout))))
