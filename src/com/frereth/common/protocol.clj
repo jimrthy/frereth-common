@@ -192,14 +192,6 @@ Note that this approach opens up severe DoS attack possibilities. And it's chatt
 TODO: Convert to something more along the lines of the libsodium handshake"
   []
   [{::direction ::client->server
-    ::spec #(= % ::ohai)
-    ::client-gen (fn [_] ::ohai)
-    ::problem "Illegal greeting"}
-   {::direction ::server->client
-    ::spec (s/and keyword? #(= % ::orly?))
-    ::server-gen (fn [_] ::orly?)
-    ::problem "Broken handshake"}
-   {::direction ::client->server
     ::spec ::icanhaz
     ::client-gen (fn [_] (list ::icanhaz {:frereth [[0 0 1]]}))}
    {::direction ::server->client
@@ -213,6 +205,11 @@ TODO: Convert to something more along the lines of the libsodium handshake"
                    (let [versions (second req)]
                      (if (contains? versions :frereth)
                        [:frereth (-> versions :frereth last)]
+                       ;; Really should just close the connection if
+                       ;; this happens.
+                       ;; Probably without telling the client to
+                       ;; reduce the DoS risk.
+                       ;; TODO: Figure out how to do that.
                        ::lolz)))
     ::problem "Unacceptable version response"}])
 
