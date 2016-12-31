@@ -30,7 +30,7 @@
                           (println "Understood versions from client:" x)
                           x)
                         #(stream/put! server-strm %)
-                        (fn [_] stream/take! server-strm) ;; best match
+                        (fn [_] (stream/take! server-strm)) ;; best match
                         #(stream/put! client-strm %))
         ;; outcome is really boring in this scenario, since stream/put!
         ;; derefs to true on success.

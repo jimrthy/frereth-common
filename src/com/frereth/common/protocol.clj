@@ -40,22 +40,29 @@
 ;;;; Step Builders
 
 (defn build-sender
-  [which strm timeout dscr]
+  [side which strm timeout dscr]
   [(fn [x]
      (let [generator (which dscr)
            msg (generator x)]
+       (println side "putting" msg)
        (stream/try-put! strm msg timeout ::timeout)))])
 
 (defn build-prev-timeout-checker
   [side strm timeout]
   (fn [sent]
-    (println "Checking that previous send didn't timeout. Result:" sent)
+    (println "Checking that previous" side "send didn't timeout. Result:" sent)
     (if (not= sent ::timeout)
       (let [response
             (stream/try-take! strm ::drained timeout ::timeout)]
-        (println "Taking the response:" response)
+        (println side "taking the response:" response)
+        ;;; Note that this is returning a deferred.
+        ;;; Which should get resolved before proceeding to the next
+        ;;; step.
+        ;;; Q: Why isn't it?
         response)
-      (throw (ex-info (str side " timed out trying to send previous step"))))))
+      (do
+        (stream/close! strm)
+        (throw (ex-info (str side " timed out trying to send previous step")))))))
 
 (defn build-received-validator
   [side dscr]
@@ -64,7 +71,7 @@
       (if (and (not= recvd ::timeout)
                (not= recvd ::drained))
         (let [spec (::spec dscr)]
-          (println "Potentially have something interesting at the" side recvd)
+          (println "Potentially have something interesting at the" side ":\n" recvd)
           (when-not (s/valid? spec recvd)
             (throw (ex-info (str "Invalid input for current "
                                  side " state: " (::problem dscr))
@@ -80,7 +87,7 @@
 
 (defmethod -client-step-builder ::client->server
   [strm timeout dscr]
-  (build-sender ::client-gen strm timeout dscr))
+  (build-sender "client" ::client-gen strm timeout dscr))
 
 (defmethod -client-step-builder ::server->client
   [strm timeout dscr]
@@ -94,18 +101,16 @@
   [strm timeout dscr]
   (let [responder (if-let [r (::server-gen dscr)]
                     r
-                    (build-received-validator "server" dscr))
-        take! stream/take! #_(fn [strm]
-                              (throw (ex-info "What do we have here?" {:rcvd x})))]
+                    (build-received-validator "server" dscr))]
     ;; First server step didn't send anything, since the client initiated comms.
     ;; So there's no need to check whether that send timed out
     (if (contains? dscr ::initial-step)
-      [take! responder]
+      [stream/take! responder]
       [(build-prev-timeout-checker "server" strm timeout) responder])))
 
 (defmethod -server-step-builder ::server->client
   [strm timeout dscr]
-  (build-sender ::server-gen strm timeout dscr))
+  (build-sender "server" ::server-gen strm timeout dscr))
 
 (defn build-steps
   "Create a list of the functions to add to the chain
@@ -174,6 +179,11 @@ on-realized handlers?"
 Honestly, this is describing a pair of FSMs."
   []
   [{::direction ::client->server
+    ;; This actually misses the point.
+    ;; When the server receives its first message, we don't
+    ;; want to check whether its previous send timed out
+    ;; (since there's no such thing...is there?)
+    ;; That actually happens in the next step.
     ::initial-step true
     ::spec #(= % ::ohai)
     ::client-gen (fn [_] ::ohai)
