@@ -6,10 +6,6 @@
             [manifold.stream :as stream]))
 
 (deftest happy-path
-  ;; Trying to get them to share the same stream seems
-  ;; like a bad idea.
-  ;; Proably need to give each its own stream, then swap
-  ;; between take! and put! until...what?
   (let [client-strm (stream/stream)
         server-strm (stream/stream)
         server (proto/server-version-protocol server-strm 50)
@@ -32,13 +28,21 @@
                         #(stream/put! server-strm %)
                         (fn [_] (stream/take! server-strm)) ;; best match
                         #(stream/put! client-strm %))
+        protected (comment (d/catch xchng Exception (fn [ex]
+                                                      ;; Q: Why aren't I getting here on test failures?
+                                                      (is false (str "Failure: " ex)))))
         ;; outcome is really boring in this scenario, since stream/put!
         ;; derefs to true on success.
         ;; This is one area where implementing this as FSMs would be much more satisfying.
         ;; Then I could know that I've reached an end state.
         outcome (deref xchng 1500 ::timeout)]
+    ;; Really should be able to do something like this:
+    (comment (is (= outcome [:frereth [0 0 1]])))
+    ;; But I can't. I don't want to just put the client response back onto the stream
+    (is (not= outcome ::timeout))
     (is outcome)
-    (is (not= outcome ::timeout))))
+    ;; Then again, it looks like I can do this:
+    (comment) (is (= (deref client 50 :did-this-exit?) [:frereth [0 0 1]]))))
 (comment
   (happy-path)
   )

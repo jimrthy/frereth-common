@@ -27,14 +27,23 @@
 (s/def ::versions (s/coll-of ::version))
 
 ;; Keyword names of protocols and the supported versions
-;; Note that, really, this should specifically be namespaced keywords
+;; Note that, really, these should specifically be namespaced keywords
+(s/def ::protocol-version (s/cat :protocol keyword?
+                                 :version ::version))
 (s/def ::protocol-versions (s/map-of keyword? ::versions))
 
+(s/def ::operation (s/cat :operator (s/or :s symbol? :k keyword?)
+                          :args (s/* any?)))
+
 (s/def ::icanhaz
-  ;; Note that this is really making a request for some sort of resource.
-  ;; In this initial example, the server lists which further protocol versions
-  ;; it supports, requesting the server to pick one.
-  (s/tuple #(= % ::icanhaz) ::protocol-versions))
+  (s/& ::operation
+       #(= (get-in % [:operator 1]) ::icanhaz)
+       #(= (count (:args %)) 1)
+       #(s/valid? ::protocol-versions (-> % :args first))))
+(comment
+  (s/valid? ::icanhaz (list ::icanhaz {:frereth [[0 0 1]]}))
+  (s/explain-data ::icanhaz (list ::icanhaz {:frereth [[0 0 1]]}))
+  )
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Step Builders
@@ -176,15 +185,13 @@ on-realized handlers?"
 (defn version-contract
   "Declaration of the handshake to allow client and server to agree on handling the next pieces
 
-Honestly, this is describing a pair of FSMs."
+Honestly, this is describing a pair of FSMs.
+
+Note that this approach opens up severe DoS attack possibilities. And it's chatty.
+
+TODO: Convert to something more along the lines of the libsodium handshake"
   []
   [{::direction ::client->server
-    ;; This actually misses the point.
-    ;; When the server receives its first message, we don't
-    ;; want to check whether its previous send timed out
-    ;; (since there's no such thing...is there?)
-    ;; That actually happens in the next step.
-    ::initial-step true
     ::spec #(= % ::ohai)
     ::client-gen (fn [_] ::ohai)
     ::problem "Illegal greeting"}
@@ -194,22 +201,20 @@ Honestly, this is describing a pair of FSMs."
     ::problem "Broken handshake"}
    {::direction ::client->server
     ::spec ::icanhaz
-    ;; Here's one failure: apparently s/tuple deliberately does not allow
-    ;; lists.
-    ;; Which is exactly what I want here.
-    ::client-gen (fn [_] (vector #_list ::icanhaz {:frereth [[0 0 1]]}))}
+    ::client-gen (fn [_] (list ::icanhaz {:frereth [[0 0 1]]}))}
    {::direction ::server->client
     ;; This spec is too loose.
     ;; It shall pick one of the versions suggested
     ;; by the client in the previous step.
     ;; Q: How can I document that formally?
-    ::spec (s/or :match (s/and ::protocol-versions
-                               #(= 1 (count %)))
+    ::spec (s/or :match ::protocol-version
                  :fail #(= % ::lolz))
-    ::server-gen (fn [versions]
-                   (if (contains? versions :frereth)
-                     {:frereth (-> versions :frereth last)}
-                     ::lolz))}])
+    ::server-gen (fn [req]
+                   (let [versions (second req)]
+                     (if (contains? versions :frereth)
+                       [:frereth (-> versions :frereth last)]
+                       ::lolz)))
+    ::problem "Unacceptable version response"}])
 
 (defn client-version-protocol
   [strm timeout]
