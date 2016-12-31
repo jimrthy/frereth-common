@@ -27,4 +27,14 @@
         outcome (deref xchng 1500 ::timeout)]
     (is outcome)
     (is (not= ::timeout outcome))
-    (is (= (deref client 50 :did-this-exit?) [:frereth [0 0 1]]))))
+    ;; We don't seem to have a similar option for the server.
+    ;; TODO: Need one.
+    (is (= (deref client 50 :did-this-exit?) [:frereth [0 0 1]]))
+    ;; This is actually just returning true, because that's what try-put!
+    ;; returns on success.
+    ;; The problem is that I need the value of the accepted protocol.
+    ;; But I really don't want to set up any server state until after
+    ;; we have a successful login.
+    ;; This is why libsodium is built around things like UDP and
+    ;; secret cookies that the client has to calculate.
+    (is (not= (deref server 50 :this-didnt-exit?) :this-didnt-exit?))))
