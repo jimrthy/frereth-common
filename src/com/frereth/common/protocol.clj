@@ -1,9 +1,10 @@
 (ns com.frereth.common.protocol
   "Centralize the communications hand-shake layer"
-  (:require [clojure.pprint :refer (pprint)]
-            [clojure.spec :as s]
+  (:require [clojure.spec :as s]
+            [com.frereth.common.util :as util]
             [manifold.deferred :as d]
-            [manifold.stream :as stream])
+            [manifold.stream :as stream]
+            [taoensso.timbre :as log])
   (:import clojure.lang.ExceptionInfo))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -53,22 +54,15 @@
   [(fn [x]
      (let [generator (which dscr)
            msg (generator x)]
-       (println side "putting" msg)
+       (log/debug side "putting" msg)
        (stream/try-put! strm msg timeout ::timeout)))])
 
 (defn build-prev-timeout-checker
   [side strm timeout]
   (fn [sent]
-    (println "Checking that previous" side "send didn't timeout. Result:" sent)
+    (log/debug "Checking that previous" side "send didn't timeout. Result:" sent)
     (if (not= sent ::timeout)
-      (let [response
-            (stream/try-take! strm ::drained timeout ::timeout)]
-        (println side "taking the response:" response)
-        ;;; Note that this is returning a deferred.
-        ;;; Which should get resolved before proceeding to the next
-        ;;; step.
-        ;;; Q: Why isn't it?
-        response)
+      (stream/try-take! strm ::drained timeout ::timeout)
       (do
         (stream/close! strm)
         (throw (ex-info (str side " timed out trying to send previous step")))))))
@@ -80,7 +74,7 @@
       (if (and (not= recvd ::timeout)
                (not= recvd ::drained))
         (let [spec (::spec dscr)]
-          (println "Potentially have something interesting at the" side ":\n" recvd)
+          (log/debug "Potentially have something interesting at the" side ":\n" recvd)
           (when-not (s/valid? spec recvd)
             (throw (ex-info (str "Invalid input for current "
                                  side " state: " (::problem dscr))
@@ -140,15 +134,15 @@ on-realized handlers?"
         ;; the more general handler.
         ;; That's annoying.
         (d/catch ExceptionInfo (fn [ex]
-                                 (println "Whoops:" ex "\nDetails:\n")
-                                 (pprint (.getData ex))
+                                 (log/warn "Whoops:" ex "\nDetails:\n"
+                                           (util/pretty (.getData ex)))
                                  (throw ex)))
         (d/catch RuntimeException (fn [ex]
-                                    (println "How'd I miss:" ex
+                                    (log/error "How'd I miss:" ex
                                              "\nBuilder should tell you the side:" builder)
                                     (throw ex)))
         (d/catch Exception (fn [ex]
-                             (println "Major oops:" ex)
+                             (log/error "Major oops:" ex)
                              ;; The error disappears even
                              ;; when I bubble it up like this.
                              ;; That moves this from "annoying"
@@ -211,7 +205,7 @@ TODO: Convert to something more along the lines of the libsodium handshake"
                        ;; reduce the DoS risk.
                        ;; TODO: Figure out how to do that.
                        ::lolz)))
-    ::problem "Unacceptable version response"}])
+    ::problem "Malformed version request"}])
 
 (defn client-version-protocol
   [strm timeout]
