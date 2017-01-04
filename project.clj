@@ -76,6 +76,7 @@ b. lein managed dependencies"
                  [org.clojure/clojure "1.9.0-alpha14"]
                  [org.clojure/core.async "0.2.395" :exclusions [org.clojure/clojure
                                                                 org.clojure/tools.analyzer]]
+                 [org.clojure/test.check "0.9.0"]
                  [org.clojure/tools.analyzer "0.6.9"]
                  [org.clojure/tools.reader "1.0.0-beta3" :exclusions [org.clojure/clojure]]]
   :java-source-paths ["java"]
