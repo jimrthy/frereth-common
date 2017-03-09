@@ -745,6 +745,27 @@ TODO: Need to ask around about that."
   (when-not child-spawner
     (assert child-spawner (str "No way to spawn child.\nAvailable keys:\n"
                                (keys this))))
+  ;;; This needs to return something that, at least in theory,
+  ;;; should use send/send-off to notify the agent about bytes
+  ;;; that are buffered and ready to transmit.
+  ;;; Or maybe that should happen over the stream that I'm
+  ;;; storing in reader.
+  ;;; This part definitely needs more work.
+  ;;; Here's what seems like the #1 detail about the reference
+  ;;; implementation:
+  ;;; It's designed to spawn a child (cpcurvemessage, I think),
+  ;;; that in turn spawns the "real" child.
+  ;;; The middleware child passes chunks of data (in blocks
+  ;;; of [(/ 16 length) data]) back and forth as fast as
+  ;;; possible.
+  ;;; It has to cope with those data streams interrupting at
+  ;;; the drop of a hat.
+  ;;; This was because the protocol was really designed as
+  ;;; a user-space replacement for TCP that would allow
+  ;;; existing servers to continue to operate without any
+  ;;; code modifications.
+  ;;; Which is really freaking cool.
+  ;;; But it does tend to muddy the waters.
   (let [{:keys [::child ::reader ::writer]} (child-spawner wrapper)]
     (assoc this
            (send-off set-up-initial-read! wrapper wrapper reader)
