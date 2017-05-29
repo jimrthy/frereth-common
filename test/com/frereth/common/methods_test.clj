@@ -24,15 +24,17 @@
 
 
 (deftest actual-point
-  (let [dscr [{::m/around (fn [x]
+  (let [dscr [{::m/before (fn [x]
+                            (is (= ::pre-1 x))
+                            ::pre-2)}
+              {::m/around (fn [x]
+                            (is (= ::pre x))
                              (try
-                               (m/call-next-method x)
+                               (m/call-next-method ::pre-1)
                                (is false "Shouldn't have succeeded")
                                (catch clojure.lang.ExceptionInfo ex
                                  (is (= {::problem ::expected} (.getData ex))))))}
-              {::m/before (fn [x]
-                            (is (= ::pre x))
-                            ::pre-1)}
+
               {::m/before (fn [x]
                             (is (= ::pre-1 x))
                             ::primary)

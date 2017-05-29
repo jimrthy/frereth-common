@@ -25,7 +25,8 @@
                                                   :before ::before
                                                   :primary ::primary
                                                   :after ::after)
-                                      :x any?)))
+                                      :x any?)
+                         :ret any?))
 ;; TODO: Actually, we have to have at least one of these keys
 (s/def ::standard-cl-method-combination (s/keys :opt [::around ::before ::primary ::after]))
 (s/def ::standard-cl-method (s/coll-of ::standard-cl-method-combination))
@@ -33,22 +34,34 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Internal Helpers
 
+(def ^:dynamic call-next-method identity)
+
 (s/fdef process-around
-        :args (s/cat :handler-chain ::standard-cl-methods
+        :args (s/cat :chain ::standard-cl-methods
+                     :nested ::around
                      :x any?)
         :ret any?)
 (defn process-around
   "Chain of calls that wraps around the :before/:primary/:after sequence"
-  [chain internals x]
-  (let [arounds (filter ::around chain)
+  [chain nested x]
+  (println "Top of process-around\nChain:"
+           chain
+           "\nNested:"
+           nested
+           "\nx:"
+           x)
+  (let [arounds (filter some? (map ::around chain))
+        _ (println "process-around/arounds:" arounds)
         wrapper (reduce (fn [next-method f]
-                          (letfn [(call-next-method
-                                    [y]
-                                    (next-method y))]
+                          (binding [call-next-method
+                                    (fn [y]
+                                      (println "Calling next method on" y)
+                                      (next-method y))]
                             (fn [y]
-                              (println "Around:" y)
+                              (println "Around:" y
+                                       "\nCalling" f)
                               (f y))))
-                        internals
+                        nested
                         arounds)]
     (wrapper x)))
 
@@ -69,9 +82,7 @@ pass to the next handler in the chain"
             (println "Pre:" acc)
             (before acc))
           x
-          (filter ::before handler-chain)))
-
-(declare call-next-method)
+          (filter some? (map ::before handler-chain))))
 
 (s/fdef process-primary
         :args (s/cat :handler-chain ::standard-cl-methods
@@ -80,7 +91,7 @@ pass to the next handler in the chain"
 (defn process-primary
   "Chain of probably-recursive calls between the :before and :after methods"
   [handler-chain x]
-  (let [primaries (filter ::primary handler-chain)
+  (let [primaries (filter some? (map ::primary handler-chain))
         chain (reduce (fn [next-method f]
                         ;; The main point is to override call-next-method
                         ;; dynamically, so each f can call the override as
@@ -89,7 +100,7 @@ pass to the next handler in the chain"
                         ;; but we'd already be out of that context before
                         ;; it ever got called.
                         ;; So try this approach instead
-                        (let [call-next-method next-method]
+                        (binding [call-next-method next-method]
                           ;; This seems a bit silly
                           (fn [y]
                             (println "Primary:" y)
@@ -105,12 +116,15 @@ pass to the next handler in the chain"
 (defn post-process
   "Note that these need to be processed in an inside-out order"
   [handler-chain x]
-  (let [handlers (reverse (filter ::after handler-chain))]
+  (let [handlers (reverse (filter some? (map ::after handler-chain)))]
     (reduce (fn [acc f]
               (println "Post:" acc)
               (f acc))
             x
             handlers)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Public
 
 (s/fdef build-common-lisp-dispatcher
         :args (s/cat :chain ::standard-cl-method)
@@ -120,6 +134,7 @@ pass to the next handler in the chain"
   [chain]
   (fn [x]
     (let [nested (fn [y]
+                   (println "Top of nested")
                    (->> y
                         (pre-process chain)
                         (process-primary chain)
