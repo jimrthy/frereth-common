@@ -93,7 +93,7 @@
                    ::K/client-extension client-extension
                    ::K/server-extension server-extension
                    ::K/nonce (Unpooled/wrappedBuffer working-nonce
-                                                     shared/server-nonce-prefix-length
+                                                     K/server-nonce-prefix-length
                                                      K/server-nonce-suffix-length)
                    ;; This is also a great big FAIL:
                    ;; Have to drop the first 16 bytes
@@ -106,3 +106,10 @@
         (is composed))
       (catch clojure.lang.ExceptionInfo ex
         (is (not (.getData ex)))))))
+
+(deftest vouch-extraction
+  ;; TODO:
+  ;; Use client/build-vouch to generate a vouch wrapper.
+  ;; Then call server/decrypt-initiate-vouch to verify that
+  ;; it extracted correctly.
+  (throw (RuntimeException. "Not Implemented")))

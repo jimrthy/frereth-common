@@ -1,38 +1,31 @@
 (ns com.frereth.common.curve.shared
-  "For pieces shared among client, server, and messaging.
-
-This is getting big enough that I really need to split it up"
-  (:require [clojure.java.io :as io]
+  "For pieces shared among client, server, and messaging"
+  (:require [byte-streams :as b-s]
+            [clojure.java.io :as io]
             [clojure.pprint :refer (pprint)]
             [clojure.spec :as s]
             [clojure.string]
             [clojure.tools.logging :as log]
-            [com.frereth.common.curve.shared.bit-twiddling :as bit-twiddling]
+            [com.frereth.common.curve.shared.bit-twiddling :as b-t]
             [com.frereth.common.curve.shared.constants :as K]
             ;; Honestly, this has no place here.
             ;; But it's useful for refactoring
-            [com.frereth.common.curve.shared.crypto :as crypto])
+            [com.frereth.common.curve.shared.crypto :as crypto]
+            [com.frereth.common.util :as util])
   (:import [com.iwebpp.crypto TweetNaclFast
             TweetNaclFast$Box]
+           io.netty.buffer.Unpooled
            java.security.SecureRandom))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Magic constants
 ;;; TODO: Pretty much all of these should move into constants
 
-(def server-nonce-prefix-length 8)
-(def server-name-length 256)
-
-(def client-header-prefix "QvnQ5Xl")
-(def hello-header (.getBytes (str client-header-prefix "H")))
+(def hello-header (.getBytes (str K/client-header-prefix "H")))
 (def hello-nonce-prefix (.getBytes "CurveCP-client-H"))
 (def hello-packet-length 224)
 
-(def cookie-nonce-minute-prefix (.getBytes "minute-k"))
 (def cookie-position-in-packet 80)
-
-(def initiate-header (.getBytes (str client-header-prefix "I")))
-(def initiate-nonce-prefix (.getBytes "CurveCP-client-I"))
 
 (def max-unsigned-long -1)
 (def millis-in-second 1000)
@@ -55,11 +48,6 @@ This is getting big enough that I really need to split it up"
 ;; Q: Worth adding a check to verify that it's a folder that exists on the classpath?
 (s/def ::keydir string?)
 (s/def ::long-pair #(instance? com.iwebpp.crypto.TweetNaclFast$Box$KeyPair %))
-;; This is a name suitable for submitting a DNS query.
-;; 1. Its encoder starts with an array of zeros
-;; 2. Each name segment is prefixed with the number of bytes
-;; 3. No name segment is longer than 63 bytes
-(s/def ::server-name (s/and bytes #(= (count %) 256)))
 (s/def ::short-pair #(instance? com.iwebpp.crypto.TweetNaclFast$Box$KeyPair %))
 (s/def ::client-keys (s/keys :req-un [::long-pair ::short-pair]
                              :opt-un [::keydir]))
@@ -68,8 +56,12 @@ This is getting big enough that I really need to split it up"
 
 (s/def ::my-keys (s/keys :req [::keydir
                                ::long-pair
-                               ::server-name
+                               ::K/server-name
                                ::short-pair]))
+
+(s/def ::long-pk ::crypto/crypto-key)
+(s/def ::short-pk ::crypto/crypto-key)
+
 ;; "Recent" timestamp, in nanoseconds
 (s/def ::recent integer?)
 
@@ -84,7 +76,15 @@ This is getting big enough that I really need to split it up"
 (s/def ::text bytes?)
 (s/def ::work-area (s/keys :req [::text ::working-nonce]))
 
+(s/def ::host string?)
+(s/def ::message bytes?)
+(s/def ::port (s/and int?
+                     pos?
+                     #(< % 65536)))
+(s/def ::network-packet (s/keys :req-un [::host ::message ::port]))
+
 (comment
+  ;; Q: Why aren't I using this?
   (s/def ::packet-length (s/and integer?
                                 pos?
                                 ;; evenly divisible by 16
@@ -107,15 +107,24 @@ This is getting big enough that I really need to split it up"
 ;;; use in cljeromq. This seems like a reasonable
 ;;; starting point.
 ;;; Q: Is port really part of it?
-(s/def ::url (s/keys :req [::server-name
+(s/def ::url (s/keys :req [::K/server-name
                            ::extension
                            ::port]))
 
+(s/def ::client-nonce (s/and bytes?
+                             #(= (count %) K/client-nonce-suffix-length)))
+(s/def ::server-nonce (s/and bytes?
+                             #(= (count %) K/server-nonce-suffix-length)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Public
+;;; Internal
 
 (defn composition-reduction
-  "Reduction function associated for run!ing from compose."
+  "Reduction function associated for run!ing from compose.
+
+TODO: Think about a way to do this using specs instead.
+
+Needing to declare these things twice is annoying."
   [tmplt fields dst k]
   (let [dscr (k tmplt)
         cnvrtr (::K/type dscr)
@@ -125,6 +134,12 @@ This is getting big enough that I really need to split it up"
         ::K/bytes (let [n (::K/length dscr)
                         beg (.readableBytes dst)]
                     (try
+                      (log/debug (str "Getting ready to write "
+                                      n
+                                      " bytes to\n"
+                                      dst
+                                      "\nfor field "
+                                      k))
                       (.writeBytes dst v 0 n)
                       (let [end (.readableBytes dst)]
                         (assert (= (- end beg) n)))
@@ -142,7 +157,7 @@ This is getting big enough that I really need to split it up"
                                          ::error ex})))))
         ::K/int-64 (.writeLong dst v)
         ::K/zeroes (let [n (::K/length dscr)]
-                     (log/info "Getting ready to write " n " zeros to " dst " based on "
+                     (log/debug "Getting ready to write " n " zeros to " dst " based on "
                                (with-out-str (pprint dscr)))
                      (.writeZero dst n))
         (throw (ex-info "No matching clause" dscr)))
@@ -161,17 +176,52 @@ This is getting big enough that I really need to split it up"
                          ::description dscr
                          ::source-value v}))))))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Public
+
+(defn bytes->string
+ [bs]
+ (with-out-str (b-s/print-bytes bs)))
+
 (defn compose
-  "This should probably be named compose! and return nil"
+  "Convert the map in fields into a ByteBuf in dst, according to the rules described in tmplt
+
+  This should probably be named compose! and return nil"
   [tmplt fields dst]
+  (comment (log/info (str "Putting\n" (util/pretty fields)
+                          fields "\ninto\n" dst
+                          "\nbased upon\n" (util/pretty tmplt))))
   ;; Q: How much do I gain by supplying dst?
   ;; It does let callers reuse the buffer, which
   ;; will definitely help with GC pressure.
+
   (run!
    (partial composition-reduction tmplt fields dst)
    (keys tmplt))
   dst)
 
+(defn build-crypto-box
+  "Compose a map into bytes and encrypt it
+
+Really belongs in crypto.
+
+But it depends on compose, which would set up circular dependencies"
+  [tmplt src dst key-pair nonce-prefix nonce-suffix]
+  {:pre [dst]}
+  (let [buffer (Unpooled/wrappedBuffer dst)]
+    (.writerIndex buffer 0)
+    (compose tmplt src buffer)
+    (let [n (.readableBytes buffer)
+          nonce (byte-array K/nonce-length)]
+      (b-t/byte-copy! nonce nonce-prefix)
+      (b-t/byte-copy! nonce
+                      (count nonce-prefix)
+                      (count nonce-suffix)
+                      nonce-suffix)
+      (crypto/box-after key-pair dst n nonce))))
+
+;; TODO: Needs spec
+;; This one seems interesting
 (defn decompose
   "Note that this very strongly assumes that I have a ByteBuf here.
 
@@ -186,27 +236,17 @@ own ns"
    (fn
      [acc k]
      (let [dscr (k tmplt)
-           cnvrtr (or (::type dscr)
-                      (::K/type dscr))]
-       ;; This can no longer decompose cookie packets.
-       ;; That packet description has moved over to constants.
-       ;; Honestly, it does belong there.
-       ;; Can't just convert this to use keywords namespaced only
-       ;; there, which is the obvious approach.
-       ;; That would break whatever templates I've written and haven't
-       ;; moved.
-       ;; Can't realistically just translate that template to use this
-       ;; namespace for its keywords, since that would mean circular
-       ;; imports.
+           cnvrtr (::K/type dscr)]
        ;; The correct approach would be to move this (and compose)
        ;; into its own tiny ns that everything else can use.
-       ;; That's also more work than I have time for at the moment.
+       ;; helpers seems like a good choice.
+       ;; That's more work than I have time for at the moment.
        (assoc acc k (case cnvrtr
-                      ::bytes (.readBytes src (::length dscr))
+                      ;; .readBytes does not produce a derived buffer.
+                      ;; The buffer that gets created here will need to be
+                      ;; released separately
                       ::K/bytes (.readBytes src (::K/length dscr))
-                      ::int-64 (.readLong src)
                       ::K/int-64 (.readLong src)
-                      ::zeroes (.readSlice src (::length dscr))
                       ::K/zeroes (.readSlice src (::K/length dscr))
                       (throw (ex-info "Missing case clause"
                                       {::failure cnvrtr
@@ -268,7 +308,7 @@ This really belongs in the crypto ns, but then where does slurp-bytes move?"
 
 (s/fdef encode-server-name
         :args (s/cat :name ::dns-string)
-        :ret ::server-name)
+        :ret ::K/server-name)
 (defn encode-server-name
   [name]
   (let [result (byte-array 256 (repeat 0))
@@ -298,7 +338,7 @@ This really belongs in the crypto ns, but then where does slurp-bytes move?"
     (let [n (- (count dst) offset)
           tmp (byte-array n)]
       (crypto/random-bytes! tmp)
-      (bit-twiddling/byte-copy! dst offset n tmp))))
+      (b-t/byte-copy! dst offset n tmp))))
 
 (defn slurp-bytes
   "Slurp the bytes from a slurpable thing
@@ -325,5 +365,6 @@ Or there's probably something similar in guava"
   (byte-array n (repeat 0)))
 
 (def all-zeros
-  "To avoid creating this over and over"
+  "To avoid creating this over and over.
+TODO: Refactor this to a function"
   (zero-bytes 128))

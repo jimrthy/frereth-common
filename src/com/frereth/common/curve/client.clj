@@ -27,7 +27,8 @@
             [manifold.deferred :as deferred]
             ;; Mixing this and core.async seems dubious, at best
             [manifold.stream :as strm])
-  (:import io.netty.buffer.Unpooled))
+  (:import clojure.lang.ExceptionInfo
+           [io.netty.buffer ByteBuf Unpooled]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Magic Constants
@@ -38,6 +39,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Specs
 
+;; Q: More sensible to check for strm/source and sink protocols?
 (s/def ::chan->child ::schema/manifold-stream)
 (s/def ::chan<-child ::schema/manifold-stream)
 (s/def ::chan->server ::schema/manifold-stream)
@@ -97,10 +99,7 @@
                                      ::server-security
                                      ::shared-secrets
                                      ::shared/work-area]
-                               :opt [::chan->child
-                                     ::chan<-child
-                                     ::child
-                                     ::initial-bytes-promise
+                               :opt [::child
                                      ;; Q: Why am I tempted to store this at all?
                                      ;; A: Well...I might need to resend it if it
                                      ;; gets dropped initially.
@@ -111,6 +110,8 @@
                                        ;; spawning a child process here?
                                        ::chan->server
                                        ::chan<-server
+                                       ;; The circular declaration of this is very
+                                       ;; suspicious.
                                        ::child-spawner
                                        ::server-extension
                                        ::timeout]))
@@ -121,10 +122,27 @@
                             #(s/valid? ::state (deref %))))
 
 ;; Because, for now, I need somewhere to hang onto the future
+;; Q: So...what is this? a Future?
 (s/def ::child any?)
-;; Q: More sensible to check for strm/source and sink protocols?
-(s/def ::reader ::chan<-child)
-(s/def ::writer ::chan->child)
+
+(s/def ::reader (s/keys :req [::chan<-child]))
+(s/def ::writer (s/keys :req [::chan->child]))
+;; This stream is for sending ByteBufs back to the child when we're done
+;; Tracking them in a thread-safe pool seems like a better approach.
+;; Especially when we're talking about the server.
+;; But I have to get a first draft written before I can worry about details
+;; like that.
+;; Actually, I pretty much have to have access to that pool now, so messages
+;; can go the other way.
+;; I could try to get clever and try to reuse buffers when we have a basic
+;; request/response scenario. But that idea totally falls apart if the
+;; communication is mostly one-sided.
+;; It's available as a potential optimization, but it probably only
+;; makes sense from the "child" perspective, where we have more knowledge
+;; about the expected traffic patterns.
+;; TODO: Switch to PooledByteBufAllocator
+;; Instead of mucking around with this release-notifier nonsense
+(s/def ::release ::writer)
 ;; Accepts the agent that owns "this" and returns
 ;; 1) a writer channel we can use to send messages to the child.
 ;; 2) a reader channel that the child will use to send byte
@@ -132,6 +150,7 @@
 (s/def ::child-spawner (s/fspec :args (s/cat :this ::state-agent)
                                 :ret (s/keys :req [::child
                                                    ::reader
+                                                   ::release
                                                    ::writer])))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -146,12 +165,26 @@
 (defn hide-long-arrays
   "Make pretty printing a little less verbose"
   [this]
-  (-> this
-      ;; TODO: Write a mirror image version of dns-encode to just show this
-      (assoc-in [::server-security :server-name] "name")
-      (assoc-in [::shared/packet-management ::shared/packet] "...packet bytes...")
-      (assoc-in [::shared/work-area ::shared/working-nonce] "...FIXME: Decode nonce bytes")
-      (assoc-in [::shared/work-area ::shared/text] "...plain/cipher text")))
+  ;; In some scenarios, we're winding up with the client as a
+  ;; deferred.
+  ;; This is specifically happening when my interaction test
+  ;; throws an unhandled exception.
+  ;; I probably shouldn't do this to try to work around that problem,
+  ;; but I really want/need as much debug info as I can get in
+  ;; that sort of scenario
+  (let [this (if (associative? this)
+               this
+               (try
+                 (assoc @this ::-hide-long-array-notice "This was a deferred")
+                 (catch java.lang.ClassCastException ex
+                   (throw (ex-info (str @this ": deferred that breaks everything")
+                                   {:cause (str ex)})))))]
+    (-> this
+        ;; TODO: Write a mirror image version of dns-encode to just show this
+        (assoc-in [::server-security ::shared/server-name] "name")
+        (assoc-in [::shared/packet-management ::shared/packet] "...packet bytes...")
+        (assoc-in [::shared/work-area ::shared/working-nonce] "...FIXME: Decode nonce bytes")
+        (assoc-in [::shared/work-area ::shared/text] "...plain/cipher text"))))
 
 (defn clientextension-init
   "Starting from the assumption that this is neither performance critical
@@ -167,8 +200,7 @@ nor subject to timing attacks because it just won't be called very often."
                      "(currently:"
                      extension
                      ") in"
-                     #_(with-out-str (pprint (hide-long-arrays this)))
-                     (keys (hide-long-arrays this)))
+                     (keys this))
         client-extension-load-time (if reload
                                      (+ recent (* 30 shared/nanos-in-second)
                                         client-extension-load-time))
@@ -233,7 +265,7 @@ nor subject to timing attacks because it just won't be called very often."
      ::K/clnt-xtn extension
      ::K/clnt-short-pk (.getPublicKey (::shared/short-pair my-keys))
      ::K/zeros nil
-     ::K/nonce (b-t/sub-byte-array working-nonce K/client-nonce-prefix-length)
+     ::K/client-nonce-suffix (b-t/sub-byte-array working-nonce K/client-nonce-prefix-length)
      ::K/crypto-box boxed}))
 
 (s/fdef build-actual-hello-packet
@@ -291,7 +323,7 @@ Note that this is really called for side-effects"
    {:keys [::K/header
            ::K/client-extension
            ::K/server-extension
-           ::K/nonce
+           ::K/client-nonce-suffix
            ::K/cookie]
     :as rcvd}]
   (log/info "Getting ready to try to extract cookie from" cookie)
@@ -303,17 +335,20 @@ Note that this is really called for side-effects"
                       "\nin\n"
                       (keys this)))
       (assert working-nonce))
-    (log/debug (str "Copying nonce prefix from\n"
+    (log/info (str "Copying nonce prefix from\n"
                     K/cookie-nonce-prefix
                     "\ninto\n"
                     working-nonce))
     (b-t/byte-copy! working-nonce K/cookie-nonce-prefix)
-    (.readBytes nonce working-nonce shared/server-nonce-prefix-length K/server-nonce-suffix-length)
+    (.readBytes client-nonce-suffix
+                working-nonce
+                K/server-nonce-prefix-length
+                K/server-nonce-suffix-length)
 
-    (log/debug "Copying encrypted cookie into " text "from" (keys this))
+    (log/info "Copying encrypted cookie into " text "from" (keys this))
     (.readBytes cookie text 0 144)
     (let [shared (::client-short<->server-long shared-secrets)]
-      (log/debug (str "Trying to decrypt\n"
+      (log/info (str "Trying to decrypt\n"
                       (with-out-str (b-s/print-bytes text))
                       "using nonce\n"
                       (with-out-str (b-s/print-bytes working-nonce))
@@ -321,18 +356,22 @@ Note that this is really called for side-effects"
                       (with-out-str (b-s/print-bytes shared))))
       ;; TODO: If/when an exception is thrown here, it would be nice
       ;; to notify callers immediately
-      (let [decrypted (crypto/open-after text 0 144 working-nonce shared)
-            extracted (shared/decompose K/cookie (Unpooled/wrappedBuffer (byte-array decrypted)))
-            server-short-term-pk (byte-array K/key-length)
-            server-cookie (byte-array K/server-cookie-length)
-            server-security (assoc (::server-security this)
-                                   ::server-short-term-pk
-                                   server-short-term-pk,
-                                   ::server-cookie server-cookie)
-            {:keys [::K/s' ::K/black-box]} extracted]
-        (.readBytes s' server-short-term-pk)
-        (.readBytes black-box server-cookie)
-        (assoc this ::server-security server-security)))))
+      (try
+        (let [decrypted (crypto/open-after text 0 144 working-nonce shared)
+              extracted (shared/decompose K/cookie decrypted)
+              server-short-term-pk (byte-array K/key-length)
+              server-cookie (byte-array K/server-cookie-length)
+              server-security (assoc (::server-security this)
+                                     ::server-short-term-pk
+                                     server-short-term-pk,
+                                     ::server-cookie server-cookie)
+              {:keys [::K/s' ::K/black-box]} extracted]
+          (.readBytes s' server-short-term-pk)
+          (.readBytes black-box server-cookie)
+          (assoc this ::server-security server-security))
+        (catch ExceptionInfo ex
+          (log/error ex (str "Decryption failed:\n"
+                             (util/pretty (.getData ex)))))))))
 
 (defn decrypt-cookie-packet
   [{:keys [::shared/extension
@@ -351,7 +390,7 @@ Note that this is really called for side-effects"
                  ::where 'shared.curve.client/decrypt-cookie-packet}]
         (throw (ex-info "Incoming cookie packet illegal" err))))
     (log/debug (str "Incoming packet that looks like it might be a cookie:\n"
-                   (with-out-str (b-s/print-bytes packet))))
+                   (with-out-str (shared/bytes->string packet))))
     (let [rcvd (shared/decompose K/cookie-frame packet)
           hdr (byte-array K/header-length)
           xtnsn (byte-array K/extension-length)
@@ -402,29 +441,16 @@ Note that this is really called for side-effects"
       (do
         (log/info "Setting up working nonce " working-nonce)
         (b-t/byte-copy! working-nonce K/vouch-nonce-prefix)
-        ;; The reference version just sets up 16 random bytes,
-        ;; if keydir is nil.
-        ;; Which is what safe-nonce does with these parameters anyway.
-        ;; Doing the check here could avoid the overhead of a
-        ;; function call, but that seems like a dubious optimization.
-        ;; Or maybe I'm just missing something basic.
         (shared/safe-nonce working-nonce keydir K/client-nonce-prefix-length)
 
-        ;; Q: What's the point to these 32 bytes?
-        ;; A: The low-level implementation requires them.
-        ;; Adding them at this level probably is more efficient,
-        ;; especially when we start throwing lots of messages
-        ;; around.
-        ;; But, for now, box-after handles this so we don't need it.
-        (comment
-          ;; TODO: Remove obsolete code/comments.
-          ;; They're only here for historical context
-          (b-t/byte-copy! text (shared/zero-bytes 32)))
         (let [short-pair (::shared/short-pair my-keys)]
           (b-t/byte-copy! text 0 K/key-length (.getPublicKey short-pair)))
         (let [shared-secret (::client-long<->server-long shared-secrets)
-              ;; The reference implementation does this.
-              ;; It doesn't seem to match the spec
+              ;; This is the inner-most secret that the inner vouch hides.
+              ;; I think the main point is to allow the server to verify
+              ;; that whoever sent this packet truly has access to the
+              ;; secret keys associated with both the long-term and short-
+              ;; term key's we're claiming for this session.
               encrypted (crypto/box-after shared-secret
                                           text K/key-length working-nonce)
               vouch (byte-array K/vouch-length)]
@@ -432,7 +458,7 @@ Note that this is really called for side-effects"
                           0
                           K/server-nonce-suffix-length
                           working-nonce
-                          shared/server-nonce-prefix-length)
+                          K/server-nonce-prefix-length)
           (b-t/byte-copy! vouch
                           K/server-nonce-suffix-length
                           (+ K/box-zero-bytes K/key-length)
@@ -505,7 +531,7 @@ implementation. This is code that I don't understand yet"
                                     (> r 640))
                             (throw (ex-info "done" {})))
                           (b-t/byte-copy! working-nonce 0 K/client-nonce-prefix-length
-                                          shared/initiate-nonce-prefix)
+                                          K/initiate-nonce-prefix)
                           ;; Reference version starts by zeroing first 32 bytes.
                           ;; I thought we just needed 16 for the encryption buffer
                           ;; And that doesn't really seem to apply here
@@ -517,8 +543,8 @@ implementation. This is code that I don't understand yet"
                           (b-t/byte-copy! text 64 64 vouch)
                           (b-t/byte-copy! text
                                           128
-                                          shared/server-name-length
-                                          (::server-name server-security))
+                                          K/server-name-length
+                                          (::K/server-name server-security))
                           ;; First byte is a magical length marker
                           ;; TODO: Double-check the original.
                           ;; This doesn't look right at all.
@@ -531,33 +557,33 @@ implementation. This is code that I don't understand yet"
                                                        text
                                                        0
                                                        (+ r 384)
-                                                       working-nonce)]
+                                                       working-nonce)
+                                offset K/server-nonce-prefix-length]
                             ;; TODO: Switch to compose for this
                             (b-t/byte-copy! packet
                                             0
-                                            shared/server-nonce-prefix-length
-                                            shared/initiate-header)
-                            (let [offset shared/server-nonce-prefix-length]
+                                            offset
+                                            K/initiate-header)
+                            (b-t/byte-copy! packet offset
+                                            K/extension-length server-extension)
+                            (let [offset (+ offset K/extension-length)]
                               (b-t/byte-copy! packet offset
-                                              K/extension-length server-extension)
+                                              K/extension-length extension)
                               (let [offset (+ offset K/extension-length)]
-                                (b-t/byte-copy! packet offset
-                                                K/extension-length extension)
-                                (let [offset (+ offset K/extension-length)]
-                                  (b-t/byte-copy! packet offset K/key-length
-                                                  (.getPublicKey (::short-pair my-keys)))
-                                  (let [offset (+ offset K/key-length)]
-                                    (b-t/byte-copy! packet
-                                                    offset
-                                                    K/server-cookie-length
-                                                    (::server-cookie server-security))
-                                    (let [offset (+ offset K/server-cookie-length)]
-                                      (b-t/byte-copy! packet offset
-                                                      shared/server-nonce-prefix-length
-                                                      working-nonce
-                                                      K/server-nonce-suffix-length))))))
-                            ;; Actually, the original version sends off the packet, updates
-                            ;; msg-len to 0, and goes back to pulling date from child/server.
+                                (b-t/byte-copy! packet offset K/key-length
+                                                (.getPublicKey (::short-pair my-keys)))
+                                (let [offset (+ offset K/key-length)]
+                                  (b-t/byte-copy! packet
+                                                  offset
+                                                  K/server-cookie-length
+                                                  (::server-cookie server-security))
+                                  (let [offset (+ offset K/server-cookie-length)]
+                                    (b-t/byte-copy! packet offset
+                                                    K/server-nonce-prefix-length
+                                                    working-nonce
+                                                    K/server-nonce-suffix-length)))))
+                            ;; Original version sends off the packet, updates
+                            ;; msg-len to 0, and goes back to pulling data from child/server.
                             (throw (ex-info "How should this really work?"
                                             {:problem "Need to break out of loop here"})))))
                       (assoc acc :msg-len msg-len))))
@@ -598,7 +624,6 @@ implementation. This is code that I don't understand yet"
     (into this
           {::child-packets []
            ::client-extension-load-time 0
-           ::initial-bytes-promise (promise)
            ::recent (System/nanoTime)
            ;; This seems like something that we should be able to set here.
            ;; djb's docs say that it's a security matter, like connecting
@@ -639,65 +664,86 @@ implementation. This is code that I don't understand yet"
   (throw (ex-info "Server Closed" this)))
 
 (defn child->server
+  "Child sent us (as an agent) a signal to add bytes to the stream to the server"
   [this msg]
   (throw (RuntimeException. "Not translated")))
 
 (defn server->child
+  "Received bytes from the server that need to be streamed back to child"
   [this msg]
   (throw (RuntimeException. "Not translated")))
 
 (defn ->message-exchange-mode
-  "The idea is that the client agent should convert into
-  message exchange mode after the handshake is complete."
-  [wrapper
-   {:keys [::chan<-server
+  "Just received first real response Message packet from the handshake.
+  Now we can start doing something interesting."
+  [{:keys [::chan<-server
            ::chan->server
-           ::chan<-child
-           ::chan->child]
+           ::chan->child
+           ::release->child
+           ::chan<-child]
     :as this}
+   wrapper
    initial-server-response]
-  ;; Forward that initial "real" message
-  (send wrapper server->child initial-server-response)
+  ;; I'm getting an ::interaction-test/timeout here
+  (log/info "Initial Response from server:\n" initial-server-response)
+  (if (not (keyword? (:message initial-server-response)))
+    (if (and chan<-child chan->server)
+      (do
+        ;; Q: Do I want to block this thread for this?
+        ;; A: As written, we can't. We're already inside an Agent$Action
+        (comment (await-for (current-timeout wrapper) wrapper))
 
-    ;; Q: Do I want to block this thread for this?
-  (comment) (await-for (current-timeout wrapper) wrapper)
+        ;; And then wire this up to pretty much just pass messages through
+        ;; Actually, this seems totally broken from any angle, since we need
+        ;; to handle decrypting, at a minimum.
 
-  ;; And then wire this up to pretty much just pass messages through
-  ;; Actually, this seems totally broken from any angle, since we need
-  ;; to handle decrypting, at a minimum
+        ;; And the send calls are totally wrong: I'm sure I can't just treat
+        ;; the streams as functions
+        ;; Important note about that "something better": it absolutely must take
+        ;; the ::child ::read-queue into account.
 
-  ;; Q: Do I want this or a plain consume?
-  (strm/connect-via chan<-child #(send wrapper chan->server %) chan->server)
+        ;; Q: Do I want this or a plain consume?
+        (strm/connect-via chan<-child #(send wrapper chan->server %) chan->server)
 
-  ;; I'd like to just do this in final-wait and take out an indirection
-  ;; level.
-  ;; But I don't want children to have to know the implementation detail
-  ;; that they have to wait for the initial response before the floodgates
-  ;; can open.
-  ;; So go with this approach until something better comes to mind
-  (strm/connect-via chan<-server #(send wrapper chan->child %) chan->child)
-  ;; Q: Is this approach better?
-  ;; A: Well, at least it isn't total nonsense
-  (comment (strm/consume (::chan<-child this)
-                         (fn [bs]
-                           (send-off wrapper (fn [state]
-                                               (let [a
-                                                     (update state ::child-packets
-                                                             conj bs)]
-                                                 (send-messages! a))))))))
+        ;; I'd like to just do this in final-wait and take out an indirection
+        ;; level.
+        ;; But I don't want children to have to know the implementation detail
+        ;; that they have to wait for the initial response before the floodgates
+        ;; can open.
+        ;; So go with this approach until something better comes to mind
+        (strm/connect-via chan<-server #(send wrapper chan->child %) chan->child)
+
+        ;; Q: Is this approach better?
+        ;; A: Well, at least it isn't total nonsense like what I wrote originally
+        (comment (strm/consume (::chan<-child this)
+                               (fn [bs]
+                                 (send-off wrapper (fn [state]
+                                                     (let [a
+                                                           (update state ::child-packets
+                                                                   conj bs)]
+                                                       (send-messages! a))))))))
+      (throw (ex-info (str "Missing either/both chan<-child and/or chan->server amongst\n" (keys @this))
+                      this)))
+    (log/warn "That response to Initiate was a failure")))
 
 (defn final-wait
   "We've received the cookie and responded with a vouch.
   Now waiting for the server's first real message
   packet so we can switch into the message exchange
   loop"
-  [wrapper sent]
-  (if (not= send ::sending-vouch-timed-out)
+  [this wrapper sent]
+  (log/info "Entering [penultimate] final-wait")
+  (if (not= sent ::sending-vouch-timed-out)
     (let [timeout (current-timeout wrapper)
-          chan<-server (::chan<-server @wrapper)
+          chan<-server (::chan<-server this)
           taken (strm/try-take! chan<-server
                                 ::drained timeout
                                 ::initial-response-timed-out)]
+      ;; I have some comment rot here.
+      ;; Big Q: Is the comment about waiting for the client's response
+      ;; below correct? (The code doesn't look like it, but the behavior I'm
+      ;; seeing implies a bug)
+      ;; Or is the docstring above?
       (deferred/on-realized taken
         ;; Using send-off here because it potentially has to block to wait
         ;; for the child's initial message.
@@ -709,18 +755,8 @@ implementation. This is code that I don't understand yet"
                                          (assoc % :problem ex)))))))
     (send wrapper #(throw (ex-info "Timed out trying to send vouch" %)))))
 
-(defn set-up-initial-read!
-  [this stream]
-  (let [first-bytes @(strm/try-take! stream ::drained util/minute ::timeout)
-        dst (::initial-bytes-promise this)]
-    (deliver dst (if (or (= first-bytes ::drained)
-                         (= first-bytes ::timeout))
-                   nil
-                   first-bytes))))
-
 (s/fdef fork
-        :args (s/cat :wrapper ::state-agent
-                     :this ::state)
+        :args (s/cat :wrapper ::state-agent)
         :ret ::state)
 (defn fork
   "This has to 'fork' a child with access to the agent, and update the agent state
@@ -738,9 +774,9 @@ mechanism.
 Although send-off might seem more appropriate, it probably isn't.
 
 TODO: Need to ask around about that."
-  [wrapper
-   {:keys [::child-spawner]
-    :as this}]
+  [{:keys [::child-spawner]
+    :as this}
+   wrapper]
   (log/info "Spawning child!!")
   (when-not child-spawner
     (assert child-spawner (str "No way to spawn child.\nAvailable keys:\n"
@@ -768,10 +804,11 @@ TODO: Need to ask around about that."
   ;;; But it does tend to muddy the waters.
   (let [{:keys [::child ::reader ::writer]} (child-spawner wrapper)]
     (assoc this
-           (send-off set-up-initial-read! wrapper wrapper reader)
-           ::chan->child reader
            ::chan<-child writer
-           ::child child)))
+           ::release->child release
+           ::chan->child reader
+           ::child child
+           ::read-queue clojure.lang.PersistentQueue/EMPTY)))
 
 (defn cookie->vouch
   "Got a cookie from the server.
@@ -781,9 +818,10 @@ TODO: Need to ask around about that."
   as the response.
 
   Handling an agent (send), which means `this` is already dereferenced"
-  [this {:keys [host port message]
-         :as cookie-packet}]
-  (log/warn (str "Getting ready to fail to convert cookie\n"
+  [this
+   {:keys [host port message]
+    :as cookie-packet}]
+  (log/info (str "Getting ready to convert cookie\n"
                  (with-out-str (b-s/print-bytes message))
                  "into a Vouch"))
   (try
@@ -796,8 +834,9 @@ TODO: Need to ask around about that."
         ;; Don't even try to pretend that this approach is thread-safe
         (.clear packet)
         (.readBytes message packet 0 K/cookie-packet-length)
-        ;; That isn't modifying the ByteBuf to let it know it has bytes available
-        ;; So brute-force it.
+        ;; That doesn't modify the ByteBuf to let it know it has bytes
+        ;; available
+        ;; So force it.
         (.writerIndex packet K/cookie-packet-length))
       (catch NullPointerException ex
         (throw (ex-info "Error trying to copy cookie packet"
@@ -809,22 +848,26 @@ TODO: Need to ask around about that."
                          ::failure ex}))))
     (if-let [this (decrypt-cookie-packet this)]
       (let [{:keys [::shared/my-keys]} this
-            ;; This is nil.
-            ;; Q: Do I have any use for it at all?
             server-short (get-in this
                                  [::server-security
                                   ::server-short-term-pk])]
-        (log/debug "Managed to decrypt the cookie!")
+        (log/debug "Managed to decrypt the cookie")
         (if server-short
           (let [this (assoc-in this
                                [::shared-secrets ::client-short<->server-short]
                                (crypto/box-prepare
                                 server-short
                                 (.getSecretKey (::shared/short-pair my-keys))))]
-            (log/info "Managed to prepare shared short-term secret")
+            (log/debug "Prepared shared short-term secret")
             ;; Note that this supplies new state
             ;; Though whether it should is debatable.
-            ;; After all...why would I put this into ::vouch?
+            ;; Q: why would I put this into ::vouch?
+            ;; A: In case we need to resend it.
+            ;; It's perfectly legal to send as many Initiate
+            ;; packets as the client chooses.
+            ;; This is especially important before the Server
+            ;; has responded with its first Message so the client
+            ;; can switch to sending those.
             (assoc this ::vouch (build-vouch this)))
           (do
             (log/error (str "Missing server-short-term-pk among\n"
@@ -836,64 +879,181 @@ TODO: Need to ask around about that."
               "Unable to decrypt server cookie"
               this)))
     (finally
-      ;; Can't do this until I really done with its contents.
-      ;; It acts as though readBytes into a ByteBuf just creates another
-      ;; reference without increasing the reference count.
-      ;; This seems incredibly brittle.
       (if message
+        ;; Can't do this until I really done with its contents.
+        ;; It acts as though readBytes into a ByteBuf just creates another
+        ;; reference without increasing the reference count.
+        ;; This seems incredibly brittle.
         (comment (.release message))
         (log/error "False-y message in\n"
                    cookie-packet
                    "\nQ: What happened?")))))
 
-(defn build-vouch-packet
-  []
+(defn wait-for-initial-child-bytes
+  [{reader ::chan<-child
+    :as this}]
+  (log/info (str "wait-for-initial-child-bytes: " reader))
+  ;; The redundant log message seems weird, but sometimes these
+  ;; things look different
+  (log/info "a.k.a." reader)
+  (when-not reader
+    (throw (ex-info "Missing chan<-child" {::keys (keys this)})))
+
+  ;; The timeout here is a vital detail here, in terms of
+  ;; UX responsiveness.
+  ;; Half a second seems far too long for the child to
+  ;; build its initial message bytes.
+  ;; Reference implementation just waits forever.
+  @(deferred/let-flow [available (strm/try-take! reader
+                                                 ::drained
+                                                 (util/minute)
+                                                 ::timed-out)]
+     (log/info "waiting for initial-child-bytes returned" available)
+     (if-not (keyword? available)
+       available   ; i.e. success
+       (if-not (= available ::drained)
+         (if (= available ::timed-out)
+           (throw (RuntimeException. "Timed out waiting for child"))
+           (throw (RuntimeException. (str "Unknown failure: " available))))
+         ;; I have a lot of interaction-test/handshake runs failing because
+         ;; of this.
+         ;; Q: What's going on?
+         ;; (I can usually re-run the test and have it work the next
+         ;; time through...it almost seems like a 50/50 thing)
+         (throw (RuntimeException. "Stream from child closed"))))))
+
+(defn pull-initial-message-bytes
+  [wrapper msg-byte-buf]
+  (when msg-byte-buf
+    (log/info "pull-initial-message-bytes ByteBuf:" msg-byte-buf)
+    (let [bytes-available (K/initiate-message-length-filter (.readableBytes msg-byte-buf))]
+      (when (< 0 bytes-available)
+        (let [buffer (byte-array bytes-available)]
+          (.readBytes msg-byte-buf buffer)
+          ;; TODO: Compare performance against .discardReadBytes
+          ;; A lot of the difference probably depends on hardware
+          ;; choices.
+          ;; Though, realistically, this probably won't be running
+          ;; on minimalist embedded controllers for a while.
+          (.discardSomeReadBytes msg-byte-buf)
+
+          (if (< 0 (.readableBytes msg-byte-buf))
+            ;; Reference implementation just fails on this scenario.
+            ;; That seems like a precedent that I'm OK breaking.
+            ;; The key for it is that (in the reference) there's another
+            ;; buffer program sitting between
+            ;; this client and the "real" child that can guarantee that this works
+            ;; correctly.
+            (send wrapper update ::read-queue conj msg-byte-buf)
+            ;; I actually have a gaping question about performance here:
+            ;; will I be able to out-perform java's garbage collector by
+            ;; recycling used ByteBufs?
+            ;; A: Absolutely not!
+            ;; It was ridiculous to ever even contemplate.
+            (strm/put! (::release->child @wrapper) msg-byte-buf))
+          buffer)))))
+
+(defn build-initiate-interior
+  "This is the 368+M cryptographic box that's the real payload/Vouch+message portion of the Initiate pack"
+  [this msg nonce-suffix]
   ;; Important detail: we can use up to 640 bytes that we've
   ;; received from the client/child.
-  ;; We may have to send this multiple times, because it could
-  ;; very well get dropped.
-  ;; Actually, if that happens, we probably need to start over
-  ;; from the initial HELLO.
-  ;; Depending on how much time we want to spend waiting for the
-  ;; initial server message. It would be very easy to just wait
-  ;; for its minute key to definitely time out, though that seems
-  ;;; like a naive approach with a terrible user experience.
-  (throw (RuntimeException. "Write this")))
+  (let [msg-length (count msg)
+        _ (assert (< 0 msg-length))
+        tmplt (assoc-in K/vouch-wrapper [::K/child-message ::K/length] msg-length)
+        server-name (get-in this [::shared/my-keys ::K/server-name])
+        _ (assert server-name)
+        src {::K/client-long-term-key (.getPublicKey (get-in this [::shared/my-keys ::shared/long-pair]))
+             ::K/inner-vouch (::vouch this)
+             ::K/server-name server-name
+             ::K/child-message msg}
+        work-area (::shared/work-area this)
+        secret (get-in this [::shared-secrets ::client-short<->server-short])]
+    (log/info (str "Encrypting:\n"
+                   src
+                   "\nVouch:\n" (b-t/->string nonce-suffix)
+                   "FIXME: Do not log this!!\n"
+                   "Shared secret:\n" (b-t/->string secret)))
+    (shared/build-crypto-box tmplt
+                             src
+                             (::shared/text work-area)
+                             secret
+                             K/initiate-nonce-prefix
+                             nonce-suffix)))
+
+;; TODO: Surely I have a ByteBuf spec somewhere.
+(s/fdef build-initiate-packet!
+        :args (s/cat :this ::state
+                     :msg-byte-buf #(instance? ByteBuf %))
+        :fn #(= (count (:ret %)) (+ 544 (count (-> % :args :msg-byte-buf K/initiate-message-length-filter))))
+        :ret #(instance? ByteBuf %))
+(defn build-initiate-packet!
+  "This is destructive in the sense that it reads from msg-byte-buf"
+  [wrapper msg-byte-buf]
+  (let [this @wrapper
+        msg (pull-initial-message-bytes wrapper msg-byte-buf)
+        work-area (::shared/work-area this)
+        ;; Just reuse a subset of whatever the server sent us.
+        ;; Legal because a) it uses a different prefix and b) it's a different number anyway
+        nonce-suffix (b-t/sub-byte-array (::shared/working-nonce work-area) K/client-nonce-prefix-length)
+        crypto-box (build-initiate-interior this msg nonce-suffix)]
+    (log/info (str "Stuffing\n"
+                   (b-t/->string crypto-box)
+                   "which is " (count crypto-box) " bytes long\n"
+                   "into the initiate packet"))
+    (let [dscr (update-in K/initiate-packet-dscr [::K/vouch-wrapper ::K/length] + (count msg))
+          fields #::K{:prefix K/initiate-header
+                      :srvr-xtn (::server-extension this)
+                      :clnt-xtn (::shared/extension this)
+                      :clnt-short-pk (.getPublicKey (get-in this [::shared/my-keys ::shared/short-pair]))
+                      :cookie (get-in this [::server-security ::server-cookie])
+                      :nonce nonce-suffix
+                      :vouch-wrapper crypto-box}]
+      (shared/compose dscr
+                      fields
+                      (get-in this [::shared/packet-management ::shared/packet])))))
 
 (defn send-vouch!
-  "Send the Vouch/Initiate packet (along with an initial Message sub-packet)"
-  [this wrapper]
-  (let [timeout (current-timeout wrapper)
-        this @wrapper
-        ;; I've dropped a really important step here.
-        ;; There's no point to trying to continue until
-        ;; the the child process sends us bytes to forward
-        ;; along.
-        ;; The reference implementation has what amounts to
-        ;; build-vouch-packet in an else block centered around
-        ;; line 448 of curvecpclient.c
-        raw-packet (get-in this [::shared/packet-management ::shared/packet])
-        ;; TODO: This also needs to come from a recyclable pool
-        buffer (byte-array (.readableBytes raw-packet))
-        chan->server (::chan->server this)
-        ;; Have to wait until forked child sends this
-        initial-bytes @(::initial-bytes-promise @wrapper)]
-    (let [buffer (build-vouch-packet)
-          d (strm/try-put!
-             chan->server
-             buffer
-             timeout
-             ::sending-vouch-timed-out)]
-      (deferred/on-realized d
-        (partial final-wait wrapper)
-        (fn [failure]
-          ;; Extremely unlikely, but
-          ;; just for the sake of paranoia
-          (send wrapper
-                (fn [this]
-                  (throw (ex-info "Timed out sending cookie->vouch response"
-                                  (assoc this
-                                         :problem failure))))))))))
+  "Send the Vouch/Initiate packet (along with an initial Message sub-packet)
+
+We may have to send this multiple times, because it could
+very well get dropped.
+
+Actually, if that happens, we probably need to start over
+from the initial HELLO.
+
+Depending on how much time we want to spend waiting for the
+initial server message (this is one of the big reasons the
+reference implementation starts out trying to contact
+multiple servers).
+
+It would be very easy to just wait
+for its minute key to definitely time out, though that seems
+like a naive approach with a terrible user experience.
+"
+  [this wrapper packet]
+  (let [chan->server (::chan->server this)
+        d (strm/try-put!
+           chan->server
+           packet
+           (current-timeout wrapper)
+           ::sending-vouch-timed-out)]
+    ;; Note that this returns a deferred.
+    ;; We're inside an agent's send.
+    ;; Mixing these two paradigms was probably a bad idea.
+    (deferred/on-realized d
+      (fn [success]
+        (log/info (str "Initiate packet sent: " success ".\nWaiting for 1st message"))
+        (send-off wrapper final-wait wrapper success))
+      (fn [failure]
+        ;; Extremely unlikely, but
+        ;; just for the sake of paranoia
+        (log/error (str "Sending Initiate packet failed!\n" failure))
+        (throw (ex-info "Timed out sending cookie->vouch response"
+                        (assoc this
+                               :problem failure)))))
+    ;; Q: Do I need to hang onto that?
+    this))
 
 (defn build-and-send-vouch
 "param wrapper: the agent that's managing the state
@@ -932,7 +1092,7 @@ terrible approach in an environment that's intended to multi-thread."
            (not= cookie-packet ::drained))
     (do
       (assert cookie-packet)
-      (log/info "Received cookie. Forking child")
+      (log/info "Received cookie in " wrapper ". Forking child")
       ;; Got a Cookie response packet from server.
       ;; Theory in the reference implementation is that this is
       ;; a good signal that it's time to spawn the child to do
@@ -943,19 +1103,34 @@ terrible approach in an environment that's intended to multi-thread."
       ;; Partial Answer: original version is geared toward converting
       ;; existing apps that pipe data over STDIN/OUT so they don't
       ;; have to be changed at all.
-      (send wrapper (partial fork wrapper))
+      (send wrapper fork wrapper)
+
       ;; Once that that's ready to start doing its own thing,
-      ;; cope with the cookie we just received
+      ;; cope with the cookie we just received.
+      ;; Doing this statefully seems like a terrible
+      ;; idea, but I don't want to go back and rewrite it
+      ;; until I have a working prototype
+      (log/info "send cookie->vouch")
       (send wrapper cookie->vouch cookie-packet)
       (let [timeout (current-timeout wrapper)]
+        ;; Give the other thread(s) a chance to catch up and get
+        ;; the incoming cookie converted into a Vouch
         (if (await-for timeout wrapper)
-          (send-off send-vouch! wrapper wrapper)
+          (let [this @wrapper
+                initial-bytes (wait-for-initial-child-bytes this)
+                vouch (build-initiate-packet! wrapper initial-bytes)]
+            (log/info "send-off send-vouch!")
+            (send-off wrapper send-vouch! wrapper vouch))
           (do
             (log/error (str "Converting cookie to vouch took longer than "
                             timeout
-                            " milliseconds.\nSwitching agent into an error state"))
-            (send wrapper
-                  #(throw (ex-info "cookie->vouch timed out" %)))))))
+                            " milliseconds."))
+            (if (agent-error wrapper)
+              (log/info "Agent failed while we were waiting")
+              (do
+                (log/warn "Switching agent into an error state")
+                (send wrapper
+                      #(throw (ex-info "cookie->vouch timed out" %)))))))))
     (send wrapper #(throw (ex-info (str cookie-packet " waiting for Cookie")
                                    (assoc %
                                           :problem (if (= cookie-packet ::drained)
@@ -986,6 +1161,32 @@ terrible approach in an environment that's intended to multi-thread."
           (partial hello-response-timed-out! wrapper))))
     (throw (RuntimeException. "Timed out sending the initial HELLO packet"))))
 
+(defn cope-with-successful-hello-creation
+  [wrapper chan->server timeout]
+  (let [raw-packet (get-in @wrapper
+                           [::shared/packet-management
+                            ::shared/packet])]
+    (log/debug "client/start! Putting" raw-packet "onto" chan->server)
+    ;; There's still an important break
+    ;; with the reference implementation
+    ;; here: this should be sending the
+    ;; HELLO packet to multiple server
+    ;; end-points to deal with them
+    ;; going down.
+    ;; I think it's supposed to happen
+    ;; in a delayed interval, to give
+    ;; each a short time to answer before
+    ;; the next, but a major selling point
+    ;; is not waiting for TCP buffers
+    ;; to expire.
+    (let [d (strm/try-put! chan->server
+                           raw-packet
+                           timeout
+                           ::sending-hello-timed-out)]
+      (deferred/on-realized d
+        (partial wait-for-cookie wrapper)
+        (partial hello-failed! wrapper)))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Public
 
@@ -999,9 +1200,12 @@ terrible approach in an environment that's intended to multi-thread."
 (defn start!
   "This almost seems like it belongs in ctor.
 
-But not quite, since it's really a side-effect that sets up another.
+But not quite, since it's really the first in a chain of side-effects.
 
 Q: Is there something equivalent I can set up using core.async?
+
+Actually, this seems to be screaming to be rewritten on top of manifold
+Deferreds.
 
 For that matter, it seems like setting up a watch on an atom that's
 specifically for something like this might make a lot more sense.
@@ -1032,36 +1236,19 @@ like a timing attack."
     ;; with mutable state.
     (send wrapper do-build-hello)
     (if (await-for timeout wrapper)
-      (let [raw-packet (get-in @wrapper
-                               [::shared/packet-management
-                                ::shared/packet])]
-        (log/debug "client/start! Putting" raw-packet "onto" chan->server)
-        ;; There's still an important break
-        ;; with the reference implementation
-        ;; here: this should be sending the
-        ;; HELLO packet to multiple server
-        ;; end-points to deal with them
-        ;; going down.
-        ;; I think it's supposed to happen
-        ;; in a delayed interval, to give
-        ;; each a short time to answer before
-        ;; the next, but a major selling point
-        ;; is not waiting for TCP buffers
-        ;; to expire.
-        (let [d (strm/try-put! chan->server
-                               raw-packet
-                               timeout
-                               ::sending-hello-timed-out)]
-          (deferred/on-realized d
-            (partial wait-for-cookie wrapper)
-            (partial hello-failed! wrapper))))
-      (throw (ex-info "Building the hello failed" {:problem (agent-error wrapper)})))))
+      (cope-with-successful-hello-creation wrapper chan->server timeout)
+      (throw (ex-info (str "Timed out after " timeout
+                           " milliseconds waiting to build HELLO packet")
+                      {:problem (agent-error wrapper)})))))
 
 (defn stop!
   [wrapper]
-  (send wrapper
-        (fn [this]
-          (shared/release-packet-manager! (::shared/packet-management this)))))
+  (if-let [err (agent-error wrapper)]
+    (log/error (str err "\nTODO: Is there any way to recover well enough to release the Packet Manager?\n"
+                    (util/show-stack-trace err)))
+    (send wrapper
+          (fn [this]
+            (shared/release-packet-manager! (::shared/packet-management this))))))
 
 (s/fdef ctor
         :args (s/keys :req [::chan<-server

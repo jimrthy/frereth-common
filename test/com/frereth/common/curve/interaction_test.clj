@@ -7,6 +7,7 @@
             [clojure.tools.logging :as log]
             [com.frereth.common.curve.client :as clnt]
             [com.frereth.common.curve.server :as srvr]
+            [com.frereth.common.curve.server.state :as state]
             [com.frereth.common.curve.server-test :as server-test]
             [com.frereth.common.curve.shared :as shared]
             [com.frereth.common.curve.shared.constants :as K]
@@ -66,20 +67,8 @@
           nonce (byte-array K/nonce-length)]
       (b-t/byte-copy! offset-text offset block-length plain-text)
 
-      ;; TODO: Roll back my debugging changes to the java code
-      ;; to get back to the canonical version.
-      ;; Then work with copies and never change that one again.
-      ;; Getting public access to the shared key like this was one
-      ;; of the more drastic changes
-      (testing "That keys match"
-        (let [official (.-sharedKey client-standard-shared)]
-          (is (b-t/bytes= client-shared-bytes official))
-          (is (= 0 (bs/compare-bytes client-shared-bytes official))))
-        (let [official (.-sharedKey server-shared)]
-          (is (b-t/bytes= server-shared-nm official))
-          (is (= 0 (bs/compare-bytes server-shared-nm official))))
-        (testing "symmetric"
-          (is (= 0 (bs/compare-bytes server-shared-nm client-shared-bytes)))))
+      (testing "symmetric"
+        (is (= 0 (bs/compare-bytes server-shared-nm client-shared-bytes))))
 
       ;; This is fairly arbitrary...24 random-bytes seems better
       (aset-byte nonce 7 1)
@@ -152,26 +141,38 @@
 
 (defn retrieve-hello
   "This is really a server-side method"
-  [client-chan hello]
-  (println "Pulled HELLO from client")
+  [mem-pool client-chan hello]
+  (log/info "Pulled HELLO from client")
   (let [n (.readableBytes hello)]
     (println "Have" n "bytes to write to " client-chan)
     (if (= 224 n)
-      (strm/put! (:chan client-chan)
-                 {:message (Unpooled/wrappedBuffer hello)
-                  :host "test-client"
-                  :port 65536})
+      (let [copy (.directBuffer mem-pool n)]
+        (.readBytes hello copy)
+        (.release hello)
+        (strm/try-put! (:chan client-chan)
+                       {:message copy
+                        :host "test-client"
+                        :port 65536}
+                       500
+                       ::timed-out))
       (throw (RuntimeException. "Bad Hello")))))
 
 (defn wrote-hello
   [client-chan success]
+  (log/info "Wrote HELLO to server")
   (is success "Failed to write hello to server")
-  ;; I'm pretty sure I need to split
-  ;; this into 2 channels so I don't pull back
-  ;; the hello that I just put on there
-  ;; Although it would be really sweet if ztellman
-  ;; handled this for me.
-  (strm/try-take! (:chan client-chan) ::drained 500 ::timeout))
+  (is (not= success ::timed-out "Timed out waiting for server to read HELLO"))
+  ;; This is timing out both here and in the server side.
+  ;; So either I'm taking from the wrong channel here (which
+  ;; seems more likely) or I've botched up the server basics.
+  ;; Actually, even though it's seemed to work before, I
+  ;; almost definitely need 2 channels for the server like
+  ;; I set up for the client.
+  (when (and success
+             (not= success ::timed-out))
+    ;; Note that the real thing has to be more robust.
+    (log/debug "Waiting for server to send back HELLO response")
+    (strm/try-take! (:chan client-chan) ::drained 500 ::timeout)))
 
 (defn forward-cookie
   [client<-server cookie]
@@ -198,72 +199,179 @@
                      cookie
                      500
                      ::timeout))
-    (throw (ex-info "Bad cookie"
+    (throw (ex-info "Bad Cookie packet from Server"
                     {:problem cookie}))))
 
 (defn wrote-cookie
-  [clnt->srvr success]
-  (println "Server cookie sent. Waiting for vouch")
-  (is success)
-  (is (not= success ::timeout))
-  (strm/try-take! clnt->srvr ::drained 500 ::timeout))
+  [clnt-> success]
+  (log/info "Wrote cookie packet to Client")
+  (is (and success
+           (not (keyword? success))))
+  (if (not= success ::timeout)
+    (do
+      (log/info "Server Cookie sent to client. Waiting for Initiate packet in response")
+      (strm/try-take! clnt-> ::drained 500 ::timeout))))
 
 (defn vouch->server
-  [client-chan vouch]
+  [mem-pool ->server vouch]
+  ;; I don't have any real failure indication available
+  ;; if something goes wrong with/on the server trying
+  ;; to cope with this incoming vouch.
+  ;; I almost need an error stream for dealing with exceptions.
+  (log/info "Got Initiate packet from client: "
+            vouch
+            " for forwarding along to "
+            ->server)
+  (is (not (keyword? vouch)))
+  ;; We just forwarded the from the server to the
+  ;; client (in forward-cookie).
+  ;; Now we pulled the Initiate packet in response
+  ;; (in wrote-cookie).
+  ;; The main point here is to forward that packet
+  ;; back to the Server.
   (if-not (or (= vouch ::drained)
               (= vouch ::timeout))
-    (strm/try-put! client-chan
-                   {:message vouch
-                    :host "tester"
-                    :port 65536}
-                   500
-                   ::timeout)
+    (let [copy (.directBuffer mem-pool (.readableBytes vouch))]
+      (.readBytes vouch copy)
+      (.release vouch)
+      (strm/try-put! (:chan ->server)
+                     {:message copy
+                      :host "tester-client"
+                      :port 65536}
+                     500
+                     ::timeout))
     (throw (ex-info "Retrieving Vouch from client failed"
                     {:failure vouch}))))
 
 (defn wrote-vouch
-  [client-chan success]
+  "Vouch went to server. Now pull its response"
+  [server-> success]
+  (is (not (keyword? success)))
   (if success
-    (strm/try-take! client-chan ::drained 500 ::timeout)
-    (throw (RuntimeException. "Failed writing Vouch to client"))))
+    (strm/try-take! (:chan server->) ::drained 500 ::timeout)
+    (throw (RuntimeException. "Failed writing Vouch to server"))))
 
 (defn finalize
-  [client<-server response]
-  (is response "Handshake should be complete")
-  (strm/try-put! client<-server
-                 {:message response
-                  :host "interaction-test-server"
-                  :port -1}
-                 500
-                 ::timeout))
+  [->client response]
+  (if (and response
+             (not (keyword? response)))
+    (strm/try-put! ->client
+                   {:message response
+                    :host "interaction-test-server"
+                    :port -1}
+                   500
+                   ::timeout)
+    (throw (ex-info "Waiting for a server ACK failed"
+                    {::received response}))))
+
+(defn notified-about-release
+  [write-notifier release-notifier read-notifier released-buffer]
+  ;; The release-notifier times out now.
+  ;; I don't think the client's getting a response here
+  (log/info (str "Client is releasing child buffer: " released-buffer
+                 "\nwrite-notifier:\n\t" write-notifier
+                 "\nrelease-notifier:\n\t" release-notifier
+                 "\nread-notifier:\n\t" read-notifier
+                 "\nat: " (System/nanoTime)))
+  ;; I definitely see this failure, but it isn't showing up as
+  ;; a test failure.
+  ;; Q: Is this a background-thread hidden sort of thing?
+  ;; Maybe CIDER just isn't clever enough to spot it?
+
+  (is (not (= released-buffer ::timed-out)))
+  (is (not (= released-buffer ::drained)))
+  ;; This is just the tip of the iceberg showing
+  ;; why this approach was a terrible idea.
+  (is (= released-buffer released-buffer))
+  ;; TODO: Make this more interesting.
+  ;; Verify what we really got back
+  ;; Send back a second block of data,
+  ;; and wait for *that* response.
+
+  (strm/close! write-notifier)
+  (strm/close! release-notifier)
+  (strm/close! read-notifier))
+
+(defn client-child
+  [buffer write-notifier release-notifier read-notifier]
+  (log/info "Client child sending bytes to server via client at "
+            (System/nanoTime))
+  (.writeBytes buffer (byte-array (range 1025)))
+  (let [wrote (strm/try-put! write-notifier
+                             buffer
+                             2500
+                             ::timedout)]
+    ;; This is timing out or failing.
+    ;; So the client is reading/waiting for the wrong thing.
+    ;; Sometimes.
+    ;; Q: What's up with that?
+    (let [succeeded (deref wrote 3000 ::check-timeout)]
+      (log/info (str "Client-child send result to " write-notifier " => "  succeeded " @ " (System/nanoTime)))
+      ;; That should work around my current bug, though it's ignoring a
+      ;; fundamental design flaw.
+      (deferred/chain release-notifier (partial notified-about-release write-notifier release-notifier read-notifier))
+      (is succeeded)
+      (is (not= succeeded ::timedout)))))
 
 (defn client-child-spawner
   [client-agent]
   (log/info "Top of client-child-spawner")
-  ;; Q: What should this really do?
-  (let [reader (strm/stream)
-        child (future
-                (println "Client child sending bytes to server via client")
-                (send client-agent (fn [client-state]
-                                     (let [buffer (get-in client-state [::shared/packet-management ::shared/packet])
-                                           ]
-                                       ())))
-                (let [written (strm/try-put! reader
-                                             "Hello, out there!"
-                                             2500
-                                             ::timedout)]
-                  (println "Client-child send result:" @written)))]
+  ;; TODO: Other variants
+  ;; 1. Start by writing 0 bytes
+  ;; 2. Write, say, 480 bytes, send notification, then 320 more
+  (let [write-notifier (strm/stream)
+        ;; Real implementations really must use a
+        ;; PooledByteBufAllocator.
+        ;; Of course, that needs to get set up at the
+        ;; outer pipeline level.
+        ;; Client shouldn't care: when it's done
+        ;; reading a buffer, it should call .release
+        ;; and be done with it.
+        ;; TODO: Make that happen (just not tonight)
+        buffer (Unpooled/buffer 2048)
+        release-notifier (strm/stream)
+        read-notifier (strm/stream)
+        child (future (client-child buffer
+                                    write-notifier
+                                    release-notifier
+                                    read-notifier))
+        hidden [(strm/try-take! read-notifier ::drained 2500 ::timed-out)
+                (strm/try-take! release-notifier ::drained 2500 ::timed-out)]]
     {::clnt/child child
-     ::clnt/reader reader
-     ;; Q: Is this really what I intended?
-     ;; At the very least, it seems like it should be the stream rather than
-     ;; the stream creator.
-     ;; I strongly suspect this was just something I slapped together
-     ;; in rough-draft mode and didn't spend any time thinking through.
-     ::clnt/writer strm/stream}))
+     ::clnt/reader  read-notifier
+     ::clnt/release release-notifier
+     ::clnt/writer write-notifier
+     ;; Q: Does it make any difference if I keep this around?
+     ::hidden-child hidden}))
 
-(deftest handshake
-  (log/info "**********************************\nNew Hand-Shake test")
+(deftest viable-server
+  (testing "Does handshake start with a usable server?"
+    (let [server-extension (byte-array [0x01 0x02 0x03 0x04
+                                      0x05 0x06 0x07 0x08
+                                      0x09 0x0a 0x0b 0x0c
+                                        0x0d 0x0e 0x0f 0x10])
+          server-name (shared/encode-server-name "test.frereth.com")
+          options #::shared{:extension server-extension
+                            :my-keys #::shared{::K/server-name server-name
+                                               :keydir "curve-test"}}
+          unstarted-server (srvr/ctor options)
+          server<-client {:chan (strm/stream)}
+          server->client {:chan (strm/stream)}]
+      (try
+        (let [server (srvr/start! (assoc unstarted-server
+                                         ::srvr/client-read-chan server<-client
+                                         ::srvr/client-write-chan server->client))]
+          (try
+            (is (-> server ::srvr/active-clients deref))
+            (is (= 0 (-> server ::srvr/active-clients deref count)))
+            (is (not (state/find-client server (.getBytes "won't find this"))))
+            (finally (srvr/stop! server))))
+        (finally
+          (strm/close! (:chan server->client))
+          (strm/close! (:chan server<-client)))))))
+
+(defn build-hand-shake-options
+  []
   (let [server-extension (byte-array [0x01 0x02 0x03 0x04
                                       0x05 0x06 0x07 0x08
                                       0x09 0x0a 0x0b 0x0c
@@ -272,26 +380,38 @@
                                     51 -105 -107 -125 -120 -41 83 -46
                                     -23 -72 109 -58 -100 87 115 95
                                     89 -74 -21 -33 20 21 110 95])
-        server-name (shared/encode-server-name "test.frereth.com")
-        options {::server #::shared{:extension server-extension
-                                    :my-keys #::shared{:server-name server-name
-                                                       :keydir "curve-test"}}
-                 ::client {::shared/extension (byte-array [0x10 0x0f 0x0e 0x0d
-                                                           0x0c 0x0b 0x0a 0x09
-                                                           0x08 0x07 0x06 0x05
-                                                           0x04 0x03 0x02 0x01])
-                           ::clnt/child-spawner client-child-spawner
-                           ::clnt/server-extension server-extension
-                           ;; Q: Where do I get the server's public key?
-                           ;; A: Right now, I just have the secret key's 32 bytes encoded as
-                           ;; the alphabet.
-                           ;; TODO: Really need to mirror what the code does to load the
-                           ;; secret key from a file.
-                           ;; Then I can just generate a random key pair for the server.
-                           ;; Use the key-put functionality to store the secret, then
-                           ;; hard-code the public key here.
-                           ::clnt/server-security {::clnt/server-long-term-pk server-long-pk
-                                                   ::shared/server-name server-name}}}
+        server-name (shared/encode-server-name "test.frereth.com")]
+    {::server #::shared{:extension server-extension
+                        :my-keys #::shared{::K/server-name server-name
+                                           :keydir "curve-test"}}
+     ::client {::shared/extension (byte-array [0x10 0x0f 0x0e 0x0d
+                                               0x0c 0x0b 0x0a 0x09
+                                               0x08 0x07 0x06 0x05
+                                               0x04 0x03 0x02 0x01])
+               ::clnt/child-spawner client-child-spawner
+               ::shared/my-keys {::K/server-name server-name}
+               ::clnt/server-extension server-extension
+               ;; Q: Where do I get the server's public key?
+               ;; A: Right now, I just have the secret key's 32 bytes encoded as
+               ;; the alphabet.
+               ;; TODO: Really need to mirror what the code does to load the
+               ;; secret key from a file.
+               ;; Then I can just generate a random key pair for the server.
+               ;; Use the key-put functionality to store the secret, then
+               ;; hard-code the public key here.
+               ::clnt/server-security {::clnt/server-long-term-pk server-long-pk
+                                       ::K/server-name server-name}}}))
+
+(deftest handshake
+  (log/info "**********************************\nNew Hand-Shake test")
+  ;; Shouldn't be trying to re-use buffers produced at client side on the server.
+  ;; And vice-versa.
+  ;; That's just adding needless complexity
+  (let [options (build-hand-shake-options)
+        ;; Note that the channel names in here seem backward.
+        ;; Remember that they're really a mirror image:
+        ;; So this is really the stream that the client uses
+        ;; to send data to us
         chan->server (strm/stream)
         chan<-server (strm/stream)
         ;; TODO: This seems like it would be a great place to try switching to integrant
@@ -300,16 +420,16 @@
                                  ::clnt/chan->server chan->server))]
     (try
       (let [unstarted-server (srvr/ctor (::server options))
-            server<-client {:chan (strm/stream)}
-            server->client {:chan (strm/stream)}]
+            chan<-client {:chan (strm/stream)}
+            chan->client {:chan (strm/stream)}]
         (try
           (log/debug "Starting server based on\n"
                      #_(with-out-str (pprint (srvr/hide-long-arrays unstarted-server)))
                      "...stuff...")
           (try
             (let [server (srvr/start! (assoc unstarted-server
-                                             ::srvr/client-read-chan server<-client
-                                             ::srvr/client-write-chan server->client))]
+                                             ::state/client-read-chan chan<-client
+                                             ::state/client-write-chan chan->client))]
               (try
                 ;; Currently just called for side-effects.
                 ;; TODO: Seems like I really should hide that little detail
@@ -318,18 +438,24 @@
                 ;; Q: Is there anything interesting about the deferred that it
                 ;; currently returns?
                 (let [eventually-started (clnt/start! client)
-                      clnt->srvr (::clnt/chan->server @client)]
+                      clnt->srvr (::clnt/chan->server @client)
+                      ;; Start with one that prefers direct buffers, even though it doesn't
+                      ;; make a lot of sense for this test.
+                      ;; I'm as certain as I can be (without actual metrics) that's the most
+                      ;; realistic picture I'll get of the way it needs to really work
+                      mem-pool (io.netty.buffer.PooledByteBufAllocator. true)]
                   (assert (= chan->server clnt->srvr)
                           (str "Client channels don't match.\n"
                                "Expected:" chan->server
                                "\nHave:" clnt->srvr))
-                  (assert clnt->srvr)
-                  (let [write-hello (partial retrieve-hello server<-client)
-                        build-cookie (partial wrote-hello server->client)
+                  (assert chan->server)
+                  (let [write-hello (partial retrieve-hello mem-pool chan<-client)
+                        build-cookie (partial wrote-hello chan->client)
                         write-cookie (partial forward-cookie chan<-server)
+                        ;; This pulls the Initiate packet from the client
                         get-cookie (partial wrote-cookie chan->server)
-                        write-vouch (partial vouch->server server<-client)
-                        get-server-response (partial wrote-vouch server->client)
+                        write-vouch (partial vouch->server mem-pool chan<-client)
+                        get-server-response (partial wrote-vouch chan->client)
                         write-server-response (partial finalize chan<-server)
                         _ (println "interaction-test: Starting the stream "
                                    clnt->srvr)
@@ -363,20 +489,30 @@
                     (is (not= (deref eventually-started 500 ::timeout)
                               ::timeout))))
                 (catch Exception ex
-                  (println "Unhandled exception escaped!")
-                  (.printStackTrace ex)
-                  (println "Client state:" (with-out-str (pprint (clnt/hide-long-arrays @client))))
-                  (if-let [err (agent-error client)]
-                    (println "Client failure:\n" err)
-                    (println "(client agent thinks everything is fine)"))
+                  (println (str "Unhandled exception ("
+                                ex
+                                ") escaped!\n"
+                                "Stack Trace:\n"
+                                (with-out-str (.printStackTrace ex))
+                                "\nClient state:\n"
+                                (with-out-str (pprint (clnt/hide-long-arrays @client)))
+                                (if-let [err (agent-error client)]
+                                  (str "\nClient failure:\n" err)
+                                  (str "\n(client agent thinks everything is fine)"))))
                   (is (not ex)))
                 (finally
                   (println "Test done. Stopping server.")
                   (srvr/stop! server))))
             (catch clojure.lang.ExceptionInfo ex
-              (is (not (.getData ex)))))
-          (finally (strm/close! (:chan server->client))
-                   (strm/close! (:chan server<-client)))))
+              (let [msg (str "Unhandled ex-info:\n"
+                             ex
+                             "\nAssociated Data:\n"
+                             (.getData ex)
+                             "\nStack Trace:\n"
+                             (with-out-str (.printStackTrace ex)))]
+                (is false msg))))
+          (finally (strm/close! (:chan chan->client))
+                   (strm/close! (:chan chan<-client)))))
       (finally
         (clnt/stop! client)))))
 

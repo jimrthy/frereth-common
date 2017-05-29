@@ -1,11 +1,22 @@
 (ns com.frereth.common.curve.shared.crypto
   "Wrap up the low-level crypto functions"
-  (:require [clojure.spec :as s]
+  (:require [byte-streams :as b-s]
+            [clojure.spec :as s]
             [clojure.tools.logging :as log]
             [com.frereth.common.curve.shared.bit-twiddling :as b-t]
-            [com.frereth.common.curve.shared.constants :as K])
-  (:import [com.iwebpp.crypto TweetNaclFast
-            TweetNaclFast$Box]))
+            [com.frereth.common.curve.shared.constants :as K]
+            [com.frereth.common.util :as utils])
+  (:import clojure.lang.ExceptionInfo
+           [com.iwebpp.crypto TweetNaclFast
+            TweetNaclFast$Box]
+           [io.netty.buffer ByteBuf Unpooled]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Specs
+
+(s/def ::crypto-key (s/and bytes?
+                           #(= (count %) K/key-length)))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Public
@@ -97,11 +108,13 @@
 (defn open-after
   "Low-level direct crypto box opening
 
-  parameter box: crypto box byte array to open
-  parameter box-offset: first byte of box to start opening
-  parameter box-length: how many bytes of box to open
-  parameter nonce: Number used Once for this specific box
-  parameter shared-key: combination of their-public and my-private
+  @parameter box: crypto box byte array to open
+  @parameter box-offset: first byte of box to start opening
+  @parameter box-length: how many bytes of box to open
+  @parameter nonce: Number used Once for this specific box
+  @parameter shared-key: combination of their-public and my-private
+
+Note that this does cope with the extra required 16 bytes of prefix padding
 
 The parameter order is screwy to match the java API.
 
@@ -140,19 +153,59 @@ which I'm really not qualified to touch."
                                                      n nonce
                                                      shared-key)]
           (when (not= 0 success)
-            (throw (RuntimeException. "Opening box failed")))
+            (throw (ex-info "Opening box failed" {::box (b-t/->string box)
+                                                  ::offset box-offset
+                                                  ::length box-length
+                                                  ::nonce (b-t/->string nonce)
+                                                  ::shared-key (b-t/->string shared-key)})))
           ;; The * 2 on the zero bytes is important.
           ;; The encryption starts with 0's and prepends them.
           ;; The decryption requires another bunch (of zeros?) in front of that.
           ;; We have to strip them both to get back to the real plain text.
-          (comment (log/info "Decrypted" box-length "bytes into" n "starting with" (aget plain-text (* 2 box-zero-bytes))))
+          (comment (log/info "Decrypted" box-length "bytes into" n "starting with" (aget plain-text K/decrypt-box-zero-bytes)))
           ;; TODO: Compare the speed of doing this with allocating a new
           ;; byte array without the 0-prefix padding and copying it back over
           ;; Keep in mind that we're limited to 1088 bytes per message.
-          (-> plain-text
-              vec
-              (subvec K/decrypt-box-zero-bytes)))))
-    (throw (RuntimeException. "Box too small"))))
+          (comment (-> plain-text
+                       vec
+                       (subvec K/decrypt-box-zero-bytes)))
+          (Unpooled/wrappedBuffer plain-text
+                                  K/decrypt-box-zero-bytes
+                                  (- box-length K/box-zero-bytes)))))
+    (throw (ex-info "Box too small" {::box box
+                                     ::offset box-offset
+                                     ::length box-length
+                                     ::nonce nonce
+                                     ::shared-key shared-key}))))
+
+(s/fdef open-crypto-box
+        :args (s/cat :prefix-bytes (s/and bytes?
+                                          #(= K/client-nonce-prefix-length
+                                              (count %)))
+                     :suffix-buffer #(instance? ByteBuf %)
+                     :crypto-buffer #(instance? ByteBuf %)
+                     :shared-key ::crypto-key)
+        :ret (s/nilable #(instance? ByteBuf %)))
+(defn open-crypto-box
+  "Generally, this is probably the least painful method [so far] to open a crypto box"
+  [prefix-bytes suffix-buffer crypto-buffer shared-key]
+  (let [nonce (byte-array K/nonce-length)
+        crypto-length (.readableBytes crypto-buffer)
+        crypto-text (byte-array crypto-length)]
+    (b-t/byte-copy! nonce prefix-bytes)
+    (let [prefix-length (count prefix-bytes)]
+      (.getBytes suffix-buffer
+                 0
+                 nonce
+                 prefix-length
+                 (- K/nonce-length prefix-length)))
+    (.getBytes crypto-buffer 0 crypto-text)
+    (try
+      (open-after crypto-text 0 crypto-length nonce shared-key)
+      (catch ExceptionInfo ex
+        (log/error ex
+                   (str "Failed to open box\n"
+                        (utils/pretty (.getData ex))))))))
 
 (defn random-array
   "Returns an array of n random bytes"
@@ -240,9 +293,17 @@ just a wrapper around this"
 
 (defn secret-unbox
   "Symmetric-key decryption"
-  [dst ciphertext length nonce key]
-  (TweetNaclFast/crypto_secretbox_open dst
-                                       ciphertext
-                                       length
-                                       nonce
-                                       key))
+  [dst cipher-text length nonce key]
+  (when (not= 0
+              (TweetNaclFast/crypto_secretbox_open dst
+                                                   cipher-text
+                                                   length
+                                                   nonce
+                                                   key))
+    (throw (ex-info "Symmetric unboxing failed"
+                    {::destination dst
+                     ::cipher-text cipher-text
+                     ::length length
+                     ::nonce nonce
+                     ::key key})))
+  dst)
