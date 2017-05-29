@@ -1,5 +1,19 @@
 (ns com.frereth.common.methods
-  "Common Lisp-style standard method combinations"
+  "Common Lisp-style standard method combinations
+
+Please look up
+http://gigamonkeys.com/book/object-reorientation-generic-functions.html
+for an explanation of what I'm trying to set up here.
+
+The way ::around works isn't exactly intuitive. Please
+see methods-test under the unit tests for an example.
+
+My original motivation was an HTTP dispatcher that really
+needed a RING middleware chain when I'm a little burned out
+on debugging what happens in the middle of those in which
+order.
+
+Time will tell whether this proves to be an improvement."
   (:require [clojure.spec :as s]
             [clojure.tools.logging :as log])
   (:import clojure.lang.ExceptionInfo))
@@ -16,18 +30,14 @@
 ;; Q: Do I know anything meaningful about this?
 (s/def ::after (s/fspec :args (s/cat :x any?)
                         :ret any?))
-;; Q: Do I want to drag these into the mix?
-;; It seems like they're really intended for doing things
-;; like setting up error handlers and dynamic environments.
-;; A: So definitely yes.
-;; TODO: Make that happen
 (s/def ::around (s/fspec :args (s/cat :next (s/or :around ::around
                                                   :before ::before
                                                   :primary ::primary
                                                   :after ::after)
                                       :x any?)
                          :ret any?))
-;; TODO: Actually, we have to have at least one of these keys
+;; Actually, we have to have at least one of these keys
+;; TODO: Work out what the spec looks like for that
 (s/def ::standard-cl-method-combination (s/keys :opt [::around ::before ::primary ::after]))
 (s/def ::standard-cl-method (s/coll-of ::standard-cl-method-combination))
 
@@ -42,18 +52,9 @@
 (defn process-around
   "Chain of calls that wraps around the :before/:primary/:after sequence"
   [chain nested x]
-  (println "Top of process-around\nChain:"
-           chain
-           "\nNested:"
-           nested
-           "\nx:"
-           x)
   (let [arounds (filter some? (map ::around chain))
-        _ (println "process-around/arounds:" arounds)
         wrapper (reduce (fn [next-method f]
                           (fn [y]
-                            (println "Around:" y
-                                     "\nCalling" f)
                             (f next-method y)))
                         nested
                         arounds)]
@@ -64,16 +65,9 @@
                      :x any?)
         :ret (s/nilable ::ring-request))
 (defn pre-process
-  "Process the ::before members of handler-chain in order.
-
-Each link in the chain can return nil to indicate not-found
-or throw an exception to trigger an error response.
-
-Otherwise, it should return a (possibly modified) request to
-pass to the next handler in the chain"
+  "Process the ::before members of handler-chain in order."
   [handler-chain x]
   (reduce (fn [acc before]
-            (println "Pre:" acc)
             (before acc))
           x
           (filter some? (map ::before handler-chain))))
@@ -87,15 +81,13 @@ pass to the next handler in the chain"
   [handler-chain x]
   (let [primaries (filter some? (map ::primary handler-chain))
         chain (reduce (fn [next-method f]
-                        ;; The main point is to override call-next-method
-                        ;; dynamically, so each f can call the override as
-                        ;; needed.
-                        ;; I think this is how *binding* is meant to work,
-                        ;; but we'd already be out of that context before
-                        ;; it ever got called.
-                        ;; So try this approach instead
+                        ;; Return a function that will be called
+                        ;; with the return value from the previous
+                        ;; value and, in turn, call this primary
+                        ;; method with
+                        ;; a) the function to call next
+                        ;; b) that "previous" value
                         (fn [y]
-                          (println "Primary:" y)
                           (f next-method y)))
                       identity
                       (reverse primaries))]
@@ -110,7 +102,6 @@ pass to the next handler in the chain"
   [handler-chain x]
   (let [handlers (reverse (filter some? (map ::after handler-chain)))]
     (reduce (fn [acc f]
-              (println "Post:" acc)
               (f acc))
             x
             handlers)))
@@ -126,7 +117,6 @@ pass to the next handler in the chain"
   [chain]
   (fn [x]
     (let [nested (fn [y]
-                   (println "Top of nested")
                    (->> y
                         (pre-process chain)
                         (process-primary chain)

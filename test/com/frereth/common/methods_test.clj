@@ -17,11 +17,19 @@
     (is (= 10 (f 4)))
     (is (= 12 (f 5)))))
 
-
 (deftest actual-point
   (let [dscr [{::m/before (fn [x]
                             (is (= ::pre-2 x))
                             ::pre-3)}
+              ;; Around methods get called before
+              ;; the before methods.
+              ;; call-next-method returns whatever the
+              ;; last after method returns.
+              ;; TODO: Need similar tests that leave
+              ;; out inner pieces to verify (i.e.
+              ;; add one that doesn't have ::before,
+              ;; another that skips the ::after,
+              ;; and another that skips the ::primary).
               {::m/around (fn [call-next-method x]
                             (is (= ::pre-1 x))
                              (try
