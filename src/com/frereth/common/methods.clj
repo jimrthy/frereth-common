@@ -34,8 +34,6 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Internal Helpers
 
-(def ^:dynamic call-next-method identity)
-
 (s/fdef process-around
         :args (s/cat :chain ::standard-cl-methods
                      :nested ::around
@@ -53,14 +51,10 @@
   (let [arounds (filter some? (map ::around chain))
         _ (println "process-around/arounds:" arounds)
         wrapper (reduce (fn [next-method f]
-                          (binding [call-next-method
-                                    (fn [y]
-                                      (println "Calling next method on" y)
-                                      (next-method y))]
-                            (fn [y]
-                              (println "Around:" y
-                                       "\nCalling" f)
-                              (f y))))
+                          (fn [y]
+                            (println "Around:" y
+                                     "\nCalling" f)
+                            (f next-method y)))
                         nested
                         arounds)]
     (wrapper x)))
@@ -100,11 +94,9 @@ pass to the next handler in the chain"
                         ;; but we'd already be out of that context before
                         ;; it ever got called.
                         ;; So try this approach instead
-                        (binding [call-next-method next-method]
-                          ;; This seems a bit silly
-                          (fn [y]
-                            (println "Primary:" y)
-                            (f y))))
+                        (fn [y]
+                          (println "Primary:" y)
+                          (f next-method y)))
                       identity
                       (reverse primaries))]
     (chain x)))
