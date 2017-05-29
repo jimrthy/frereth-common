@@ -114,6 +114,9 @@ Time will tell whether this proves to be an improvement."
         :ret (s/fspec :args (s/cat :x any?)
                       :ret any?))
 (defn build-common-lisp-dispatcher
+  "Combine a seq of maps of ::before, ::after, ::primary, and ::around 'methods'
+
+In a way that's at least roughly analogous to the way it works in CLOS"
   [chain]
   (fn [x]
     (let [nested (fn [y]
