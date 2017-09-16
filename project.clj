@@ -23,22 +23,10 @@ b. lein managed dependencies"
                                                                 org.apache.httpcomponents/httpcore
                                                                 org.apache.maven.wagon/wagon-http
                                                                 org.codehaus.plexus/plexus-utils]]
-                 ;; TODO: Switch to integrant
-                 #_[com.jimrthy/component-dsl "0.1.2-SNAPSHOT" :exclusions [org.clojure/clojure]]
                  [com.taoensso/timbre "4.10.0" :exclusions [org.clojure/clojure
                                                            org.clojure/tools.reader]]
-                 ;; Q: Do I really want this?
-                 ;; A: Not really
-                 [fullcontact/full.async "1.0.0" :exclusions [org.clojure/clojure
-                                                              org.clojure/core.async]]
-                 #_[gloss "0.2.5" :exclusions [byte-streams
-                                             manifold
-                                             potemkin]]
                  [im.chit/hara.event "2.5.10" :exclusions [org.clojure/clojure]]
                  [integrant "0.6.1"]
-                 ;; This isn't playing with clojure 1.9
-                 #_[io.aviso/config "0.2.4" :exclusions [org.clojure/clojure
-                                                         prismatic/schema]]
                  ;; They're up to 5.0.0.Alpha2, but that breaks aleph
                  [io.netty/netty-all "4.1.6.Final"]
                  ;; Because pomegranate and lein conflict.
@@ -47,14 +35,7 @@ b. lein managed dependencies"
                  [org.apache.httpcomponents/httpcore "4.4.7"]
                  [org.apache.httpcomponents/httpclient "4.5.3"]
 
-                 ;; This is screwing up EDN serialization
-                 ;; In particular dates.
-                 ;; TODO: Make it ignore those
-                 ;; Q: Has the situation improved in the months I've been ignoring it?
-                 ;; A: It really should have. The issue behind it is closed,
-                 ;; anyway.
-                 ;; Next Q: Does this really gain anything?
-                 #_[mvxcvi/puget "1.0.1" :exclusions [org.clojure/clojure]]
+                 ;; Sticking with this version due to CIDER incompatabilities
                  [org.clojure/clojure "1.9.0-alpha17"]
                  [org.clojure/core.async "0.3.443" :exclusions [org.clojure/clojure
                                                                 org.clojure/tools.analyzer]]
