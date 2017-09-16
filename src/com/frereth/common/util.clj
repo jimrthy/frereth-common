@@ -1,36 +1,40 @@
 (ns com.frereth.common.util
   "Utilities to try to make my life easier"
+  ;; TODO: Eliminate any overlap between here and
+  ;; frereth-cp.util
+  ;; Assuming I ever get that into good enough shape
+  ;; to actually use it
   (:require [clojure.core.async :as async]
             [clojure.edn :as edn]
             [clojure.pprint :as pprint]
-            [clojure.spec :as s]
+            [clojure.spec.alpha :as s]
             [clojure.string :as string]
             [com.frereth.common.schema :as fr-sch]
             [hara.event :refer (raise)]
             [taoensso.timbre :as log])
-  (:import [java.io PushbackReader Reader]
+  (:import clojure.lang.ExceptionInfo
+           [java.io PushbackReader Reader]
            [java.lang.reflect Modifier]
            [java.net InetAddress]
            [java.util UUID]))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Named constants for timeouts
+;;; TODO: These really don't belong in here
+;;; (aside from lacking an indicator that the unit is milliseconds)
+(defn seconds [] 1000)  ; avoid collision w/ built-in second
+(defn minute [] (* 60 (seconds)))
+(defn hour [] (* 60 (minute)))
+(defn day [] (* 24 (hour)))
+(defn week [] (* 7 (day)))
+;; Yes, this falls apart
+(defn year [] (* 365 day))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Specs
 
 (s/def ::reader (fr-sch/class-predicate Reader))
 (s/def ::pushback-reader (fr-sch/class-predicate PushbackReader))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Configuration
-
-;; Global function calls like this are bad.
-;; Especially since I'm looking at a
-;; white terminal background, as opposed to what
-;; most seem to expect
-;; TODO: Put this inside a component's start
-;; instead
-;; Bigger TODO: Figure out what replaced it
-(comment
-  (puget/set-color-scheme! :keyword [:bold :green]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Internal
@@ -97,6 +101,21 @@
 ;;; Public
 
 ;; TODO: Spec this
+(defn pretty
+  "Return a pretty-printed representation of xs"
+  [& xs]
+  (try
+    (with-out-str (apply pprint/pprint xs))
+    (catch RuntimeException ex
+      (log/error ex "Pretty printing failed (there should be a stack trace about this failure).
+Falling back to standard")
+      (str xs))
+    (catch AbstractMethodError ex
+      ;; Q: Why isn't this a RuntimeException?
+      (log/error ex "Something seriously wrong w/ pretty printing? Falling back to standard:\n")
+      (str xs))))
+
+;; TODO: Spec this
 (defn cheat-sheet
   "Shamelessly borrowed from https://groups.google.com/forum/#!topic/clojure/j5PmMuhG3d8"
   [ns]
@@ -156,7 +175,36 @@
 
 Because I keep using them for heartbeat monitors"
   []
-  (async/timeout (* 1000 60 5)))
+  (async/timeout (* (minute) 5)))
+
+(s/fdef get-stack-trace
+        :args (s/cat :ex #(instance? Throwable %))
+        :ret (s/coll-of str))
+(defn get-stack-trace
+  [ex]
+  (reduce
+   (fn [acc frame]
+     (conj acc
+           (str "\n" (.getClassName frame)
+                "::" (.getMethodName frame)
+                " at " (.getFileName frame)
+                " line " (.getLineNumber frame))))
+   [] (.getStackTrace ex)))
+
+(s/fdef show-stack-trace
+        :args (s/cat :ex #(instance? Throwable %))
+        :ret string?)
+(defn show-stack-trace
+  "Convert stack trace to a readable string
+Slow and inefficient, but you have bigger issues than
+performance if you're calling this"
+  [ex]
+  (let [base (if (instance? ExceptionInfo ex)
+               (str ex "\n" (pretty (.getData ex)))
+               (str ex))]
+    (reduce #(str %1 %2)
+            base
+            (get-stack-trace ex))))
 
 (s/fdef load-resource
         :args (s/cat :url string?)
@@ -191,20 +239,6 @@ Totally fails on multi-home systems. But it's worthwhile as a starting point"
   "Returns the current user's home directory"
   []
   (System/getProperty "user.home"))
-
-;; TODO: Spec this
-(defn pretty
-  [& os]
-  (try
-    (with-out-str (apply pprint/pprint os))
-    (catch RuntimeException ex
-      (log/error ex "Pretty printing failed (there should be a stack trace about this failure).
-Falling back to standard")
-      (str os))
-    (catch AbstractMethodError ex
-      ;; Q: Why isn't this a RuntimeException?
-      (log/error ex "Something seriously wrong w/ pretty printing? Falling back to standard:\n")
-      (str os))))
 
 (s/fdef pushback-reader
         :args (s/cat :reader ::reader)
@@ -269,13 +303,3 @@ for a more complex-looking example which would be much more appropriate for that
 sort of scenario"
   []
   (count (Thread/getAllStackTraces)))
-
-;;; Named constants for timeouts
-;;; TODO: These really don't belong in here
-;;; Aside from being grossly inaccurate
-(defn seconds [] 1000)  ; avoid collision w/ built-in second
-(defn minute [] (* 60 (seconds)))
-(defn hour [] (* 60 (minute)))
-(defn day [] (* 24 (hour)))
-(defn week [] (* 7 (day)))
-(defn year [] (* 365 day))
