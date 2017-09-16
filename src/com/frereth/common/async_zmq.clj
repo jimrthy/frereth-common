@@ -17,19 +17,14 @@ with this branch."
             [clojure.core.async :as async :refer (>! >!!)]
             [clojure.edn :as edn]
             [clojure.pprint :refer (pprint)]
-            [clojure.spec :as s]
+            [clojure.spec.alpha :as s]
             [com.frereth.common.async-component]
             [com.frereth.common.schema :as fr-sch]
             [com.frereth.common.util :as util]
             [com.frereth.common.zmq-socket :as zmq-socket]
-            [com.stuartsierra.component :as component]
-            [component-dsl.system :as cpt-dsl]
-            [full.async :refer (<? <?? alts? go-try)]
             [hara.event :refer (raise)]
-            [taoensso.timbre :as log])
-  (:import [com.frereth.common.async_component AsyncChannelComponent]
-           #_[com.frereth.common.zmq_socket SocketDescription]
-           [com.stuartsierra.component SystemMap]))
+            [integrant.core :as ig]
+            [taoensso.timbre :as log]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Specs
@@ -496,7 +491,7 @@ Spec mismatch. Would have caught it in the pre-condition if that were enabled
           poller (mq/poller 2)]
       (mq/register-socket-in-poller! (:socket ex-sock) poller)
       (mq/register-socket-in-poller! ->zmq-sock poller)
-      (go-try
+      (go
        (comment (log/debug "Entering 0mq event thread"))
        (try
          ;; Move the actual functionality into its own function

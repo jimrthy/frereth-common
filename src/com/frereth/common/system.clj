@@ -1,13 +1,12 @@
 (ns com.frereth.common.system
   "This is another one that doesn't make a lot of sense"
-  (:require #_[cljeromq.core :as mq]
-            [clojure.core.async :as async]
-            [clojure.spec :as s]
-            [com.frereth.common.async-component]
-            [com.frereth.common.curve.shared :as curve]
-            [component-dsl.system :as cpt-dsl]
-            [hara.event :refer (raise)])
-  (:import [com.stuartsierra.component SystemMap]))
+  (:require [clojure.core.async :as async]
+            [clojure.spec.alpha :as s]
+            [com.frereth.common.async-component :as async-cpt]
+            [com.frereth.common.async-zmq :as async-zmq]
+            #_[com.frereth.common.curve.shared :as curve]
+            [hara.event :refer (raise)]
+            [integrant.core :as ig]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Specs
@@ -17,15 +16,18 @@
 ;;; Public
 
 (s/fdef build-event-loop-description
-        :args (s/cat :options (s/keys :unq-opt {::client-keys ::curve/client-keys
+        ;; FIXME: These specs are broken.
+        ;; Restore them when I can use my CurveCP library
+        :args (s/cat :options (s/keys :unq-opt {::client-keys #_client-keys any?
                                                 ; ::direction :cljeromq.common/direction
-                                                ::server-key ::curve/public-key
+                                                ::server-key #_::public-key any?
                                                 ; ::socket-type :cljeromq.common/socket-type
                                                 }
                                       :unq-req {::context :com.frereth.common.zmq-socket/context-wrapper
                                                 ::event-loop-name string?
-                                                ::url ::curve/url}))
-        :ret :component-dsl.system/nested-definition)
+                                                ::url #_::url any?}))
+        ;; Q: Do I want to try to spec the return value?
+        :ret any?)
 (defn build-event-loop-description
   "Return a component description that's suitable for nesting into yours to pass along to cpt-dsl/build
 
@@ -42,68 +44,47 @@ So this abstraction absolutely does belong in common.
 
 It seems to make less sense under the system namespace, but
 I'm not sure which alternatives make more sense."
-  [{:keys [client-keys
-           context
-           direction
-           event-loop-name
-           server-key
-           socket-type
-           thread-count
-           url]
-    :or {direction :connect
-         socket-type :dealer
-         thread-count 2}}]
+  [_ {:keys [client-keys
+             context
+             direction
+             event-loop-name
+             server-key
+             socket-type
+             thread-count
+             url]
+      :or {direction :connect
+           socket-type :dealer
+           thread-count 2}
+      :as opts}]
   (let [url #_(cond-> url
               (not (:cljeromq.common/zmq-protocol url)) (assoc :cljeromq.common/zmq-protocol :tcp)
               (not (:cljeromq.common/zmq-address url)) (assoc :cljeromq.common/zmq-address [127 0 0 1])
               (not (:cljeromq.common/port url)) (assoc :cljeromq.common/port 9182))
         (throw (RuntimeException. "What makes sense here?"))]
-    (let [options {::context {:thread-count thread-count}
-                   ::event-loop {:_name event-loop-name}
-                   ::ex-sock {:zmq-url url
-                              :direction direction
-                              :sock-type socket-type}}
-          ;; TODO: Improve component-dsl so I can override
-          ;; the values here with a dependency on
-          ;; an external context
-          ;; the way I need to for frereth-client.
-          ;; That needs a bunch of these, but there's no reason
-          ;; (?) to create multiple contexts.
-          ;; Then again...is there a serious reason not to?
-          ;; (from Pieter Hintjens: not really. Although newer
-          ;; [post 3.1] versions do offer some nice API conveniences,
-          ;; such as cleaning up all the associated sockets when
-          ;; you delete the context).
-          ;; Oh, and inproc sockets from different contexts can't
-          ;; communicate.
-          ;; OTOH, this sort of dependency injection is one of
-          ;; the main selling points behind Components
-          struc '{;; Q: Does it make sense to come up with something
-                  ;; to explicitly replace the 0mq Context?
-                  ;; We definitely do need netty/aleph loops,
-                  ;; but the client/server implementations are
-                  ;; quite different. And small enough that it
-                  ;; doesn't seem worth the effort to try to
-                  ;; refactor out the common parts.
-                  ;; ::context com.frereth.common.zmq-socket/ctor
-                  ;; These next two seem more difficult/vital to replace
-                  ;; ::event-loop com.frereth.common.async-zmq/ctor
-                  ;; ::evt-iface com.frereth.common.async-zmq/ctor-interface
-                  ::ex-chan com.frereth.common.async-component/chan-ctor
-                  ;; And...I'm not sure how I'll even start to replace
-                  ;; this.
-                  ;; If/when I really need to.
-                  ;; ::ex-sock com.frereth.common.zmq-socket/ctor
-                  ::in-chan com.frereth.common.async-component/chan-ctor
-                  ::status-chan com.frereth.common.async-component/chan-ctor}
-          deps {::evt-iface {:ex-sock ::ex-sock
-                             :in-chan ::in-chan
-                             :status-chan ::status-chan}
-                ::event-loop {:interface ::evt-iface
-                              :ex-chan ::ex-chan}
-                ::ex-sock {:context-wrapper ::context}}
-          description {:component-dsl.system/structure struc
-                       :component-dsl.system/dependencies deps}]
-      #:component-dsl.system{:system-configuration description
-                             :configuration-tree options
-                             :primary-component ::event-loop})))
+    {::async-zmq/event-iface {:ex-sock (ig/ref [::async-cpt/async ::in-chan])
+                              :in-chan (ig/ref ::in-chan)
+                              :status-chan (ig/ref [::async-cpt/async ::status-chan])}
+     ::async-zmq/event-loop {:_name event-loop-name
+                             :interface (ig/ref ::async-zmq/event-iface)
+                             :ex-chan (ig/ref [::async-cpt/async ::ex-chan])}
+     ::context {:thread-count thread-count}
+     ::ex-sock {:context-wrapper (ig/ref ::context)
+                :zmq-url url
+                :direction direction
+                :sock-type socket-type}
+     [::async-cpt/async ::ex-chan] {}
+     [::async-cpt/async ::in-chan] {}
+     [::async-cpt/async  ::status-chan] {}}))
+
+;; None of these are correct.
+;; They're calling the constructor to define
+;; the structure of the record that I've
+;; been passing to (component/start).
+;; But it's an initial step toward getting the
+;; pieces translated to integrant
+(defmethod ig/init-key ::context
+  [_ opts]
+  ;; I'm not sure what the CurveCP interface will
+  ;; wind up looking like, but this absolutely
+  ;; is not it.
+  (throw (RuntimeException. "Totally obsolete")))

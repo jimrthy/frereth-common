@@ -4,20 +4,16 @@
 
   Actually, there needs to be a higher level interface for that.
   This might be a great use case for protocols."
-  (:require #_[cljeromq
-             [common :as mq-cmn]
-             [core :as mq]
-             [curve :as curve]]
-            [clojure.pprint :refer (pprint)]
-            [clojure.spec :as s]
+  (:require [clojure.pprint :refer (pprint)]  ;; TODO: Convert to fipp
+            [clojure.spec.alpha :as s]
             [com.frereth.common
              [schema :as schema]
              [util :as util]]
-            [com.frereth.common.curve.shared :as curve]
-            [com.stuartsierra.component :as component]
+            ;; Need whatever this morphed into for the sake of
+            ;; specs
+            #_[com.frereth.common.curve.shared :as curve]
             [taoensso.timbre :as log])
-  (:import [clojure.lang ExceptionInfo]
-           #_[org.zeromq ZMQException]))
+  (:import [clojure.lang ExceptionInfo]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Schema
@@ -27,11 +23,11 @@
 (s/def ::context-wrapper (s/keys :req-un [::ctx
                                           ::thread-count]))
 
-(s/def ::client-keys (s/nilable ::curve/long-pair))
+(s/def ::client-keys (s/nilable #_::long-pair any?))
 ;; TODO: Move this into schema instead
 (s/def ::port (s/nilable (s/and nat-int? #(< % 65536))))
-(s/def ::public-server-key ::curve/public-key)
-(s/def ::private-server-key ::curve/secret-key)
+(s/def ::public-server-key #_::public-key any?)
+(s/def ::private-server-key #_::secret-key any?)
 (comment
   (s/def ::sock-type :cljeromq.common/socket-type)
   (s/def ::base-socket-description (s/keys :opt-un [::port]
@@ -134,15 +130,17 @@
             ;; TODO: Make them add encryption
             (comment (assert server-key "Not allowing decrypted communications"))
             (when server-key
-           ;;; Honestly, it's more complicated than this.
-           ;;; If we want it to be a server, we might want to start out
-           ;;; with the set of allowed client keys.
-           ;;; That's something that really needs to be checked through zauth,
-           ;;; which really isn't fully baked just yet.
-           ;;; So go with this approach for now.
-              (if client-keys
-                (curve/prepare-client-socket-for-server! sock client-keys server-key)
-                (curve/make-socket-a-server! sock server-key)))
+              ;; Honestly, it's more complicated than this.
+              ;; If we want it to be a server, we might want to start out
+              ;; with the set of allowed client keys.
+              ;; That's something that really needs to be checked through zauth,
+              ;; which really isn't fully baked just yet.
+              ;; So go with this approach for now.
+              (comment
+                (if client-keys
+                  (curve/prepare-client-socket-for-server! sock client-keys server-key)
+                  (curve/make-socket-a-server! sock server-key)))
+              (throw (RuntimeException. "Need something along those lines")))
             (let [uri (mq/connection-string zmq-url)]
               (if (= direction :bind)
                 (try

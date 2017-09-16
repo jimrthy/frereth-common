@@ -2,7 +2,7 @@
   "Wrappers for my aleph experiments"
   (:require [aleph.udp :as udp]
             [clojure.edn :as edn]
-            [clojure.spec :as s]
+            [clojure.spec.alpha :as s]
             [manifold.deferred :as deferred]
             [manifold.stream :as stream]))
 
@@ -156,7 +156,7 @@ At least conceptually."
 
 (defn close!
   "Closes a server instance"
-  [x]
+  [^java.io.Closeable x]
   (.close x))
 
 (comment

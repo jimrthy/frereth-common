@@ -1,6 +1,6 @@
 (ns com.frereth.common.baseline-test
   "For checking the pieces underlying my Components"
-  (:require [clojure.spec :as s]
+  (:require [clojure.spec.alpha :as s]
             [clojure.test :refer (deftest is testing)]
             [com.frereth.common.util :as util]))
 

@@ -8,7 +8,7 @@ Originally written over 0mq. There's an open question about
   ;; Well, and it was easy.
   (:require #_[cljeromq.common :as mq-cmn]
             #_[cljeromq.core :as mq]
-            [clojure.spec :as s]
+            [clojure.spec.alpha :as s]
             [com.frereth.common.schema :as fr-sch]
             [com.frereth.common.util :as util]
             [hara.event :refer (raise)]

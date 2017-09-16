@@ -4,18 +4,14 @@
             [clojure.core.async :as async]
             [clojure.pprint :refer (pprint)]
             [clojure.repl :refer (pst)]
-            [clojure.spec :as s]
+            [clojure.spec.alpha :as s]
             [clojure.test :refer (deftest is testing)]
             #_[com.frereth.common.async-zmq :refer :all :as a-z]
             [com.frereth.common.schema :as fr-schema]
             [com.frereth.common.util :as util]
             #_[com.frereth.common.zmq-socket :as common-mq]
-            [com.stuartsierra.component :as component]
-            [component-dsl.system :as cpt-dsl]
             [taoensso.timbre :as log])
-  (:import [clojure.lang ExceptionInfo]
-           [com.stuartsierra.component SystemMap]
-           #_[org.zeromq ZMQException]))
+  (:import [clojure.lang ExceptionInfo]))
 
 (comment
   (defn mock-cfg

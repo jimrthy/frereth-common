@@ -1,25 +1,22 @@
 (ns dev
   "TODO: Really should figure out a way to share all the common pieces
   (hint, hint)"
-  (:require [cljeromq.core :as mq]
-            [clojure.core.async :as async]
+  (:require [clojure.core.async :as async]
             [clojure.edn :as edn]
             [clojure.inspector :as i]
             [clojure.java.io :as io]
             [clojure.pprint :refer (pprint)]
             [clojure.repl :refer :all]  ; dir is very useful
-            [clojure.spec :as s]
-            [clojure.spec.gen :as gen]
+            [clojure.spec.alpha :as s]
+            [clojure.spec.gen.alpha :as gen]
             [clojure.string :as string]
             [clojure.test :as test]
             [clojure.tools.namespace.repl :refer (refresh refresh-all)]
-            [com.stuartsierra.component :as component]
             [com.frereth.common.aleph :as aleph]
             [com.frereth.common.communication :as com-comm]
             [com.frereth.common.config :as cfg]
             [com.frereth.common.system :as sys]
             [com.frereth.common.util :as util]
-            [component-dsl.system :as cpt-dsl]
             [clj-time.core :as dt]
             [hara.event :refer (raise)]))
 
@@ -39,43 +36,49 @@
   []
   (set! *print-length* 50)
 
-  (let [ctx (mq/context 4)
-        socket-pair (mq/build-internal-pair! ctx)
-        reader (fn [sock]
-                 (println "Fake system reading")
-                 (mq/raw-recv! sock))
-        writer (fn [sock msg]
-                 (println "Fake system sending")
-                 (mq/send! sock msg))
-        parameters-tree {:event-loop {:context ctx
-                                      :ex-sock (:lhs socket-pair)
-                                      :in-chan (async/chan)
-                                      :external-reader reader
-                                      :external-writer writer}}
-        ;; Note that this fails on startup:
-        ;; since it's specifically designed to be a component nested among others,
-        ;; it fails when I try to create it at the top level.
-        ;; This is a bug/design flaw, but not really a primary concern.
-        ;; Actually, for this scenario, I could just call it directly and build a component
-        ;; from the definition the event-loop ctor returns
-        config #:component-dsl.system {:structure '{:event-loop com.frereth.common.async-zmq/ctor}
-                                       :dependencies []}]
-    (alter-var-root #'system
-                    (constantly (assoc (cpt-dsl/build config parameters-tree)
-                                       ;; fake-external is here to let me interact with the
-                                       ;; event loop.
-                                       :fake-external (:rhs socket-pair))))))
+  ;; integrant-repl handles the var-altering behavior
+  ;; for us
+  (comment
+      (let [ctx (mq/context 4)
+            socket-pair (mq/build-internal-pair! ctx)
+            reader (fn [sock]
+                     (println "Fake system reading")
+                     (mq/raw-recv! sock))
+            writer (fn [sock msg]
+                     (println "Fake system sending")
+                     (mq/send! sock msg))
+            parameters-tree {:event-loop {:context ctx
+                                          :ex-sock (:lhs socket-pair)
+                                          :in-chan (async/chan)
+                                          :external-reader reader
+                                          :external-writer writer}}
+            ;; Note that this fails on startup:
+            ;; since it's specifically designed to be a component nested among others,
+            ;; it fails when I try to create it at the top level.
+            ;; This is a bug/design flaw, but not really a primary concern.
+            ;; Actually, for this scenario, I could just call it directly and build a component
+            ;; from the definition the event-loop ctor returns
+            config ::event-loop {}]
+        (alter-var-root #'system
+                        (constantly (assoc (cpt-dsl/build config parameters-tree)
+                                           ;; fake-external is here to let me interact with the
+                                           ;; event loop.
+                                           :fake-external (:rhs socket-pair))))))
+  (throw (RuntimeException. "Have this do something sensible")))
 
 (defn start
   "Starts the current development system."
   []
-  (alter-var-root #'system component/start))
+  (comment (alter-var-root #'system component/start))
+  (throw (RuntimeException. "Switch to that approach")))
 
 (defn stop
   "Shuts down and destroys the current development system."
   []
-  (alter-var-root #'system
-    (fn [s] (when s (component/stop s)))))
+  (comment
+    (alter-var-root #'system
+                    (fn [s] (when s (component/stop s)))))
+  (throw (RuntimeException. "This too")))
 
 (defn go-go
   "Initializes the current development system and starts it running.

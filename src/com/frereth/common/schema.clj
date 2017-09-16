@@ -1,13 +1,9 @@
 (ns com.frereth.common.schema
   "Prismatic schema definitions that are shared pretty much everywhere"
-  (:require #_[cljeromq.common :as mq-common]
-            #_[cljeromq.core :as mq]
-            [clojure.core.async :as async]
-            [clojure.spec :as s]
-            [com.stuartsierra.component]
+  (:require [clojure.core.async :as async]
+            [clojure.spec.alpha :as s]
             [manifold.stream :as strm])
-  (:import [com.stuartsierra.component SystemMap]
-           [java.util Date]))
+  (:import [java.util Date]))
 
 (defn class-predicate
   "Returns a predicate to check whether an object is an instance of the supplied class.
@@ -65,6 +61,3 @@ But we do need it for places like method dispatch"
 (s/def ::generic-id (s/or :keyword keyword?
                           :string string?
                           :uuid uuid?))
-
-;; Q: Is this worth really defining?
-(s/def ::system-map (class-predicate SystemMap))

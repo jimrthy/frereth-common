@@ -6,9 +6,9 @@ b. lein managed dependencies"
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
-  :dependencies [[aleph "0.4.1"]
+  :dependencies [[aleph "0.4.3"]
                  #_[buddy/buddy-core "1.1.1"]  ;; Q: Is there any point to this now?
-                 [clj-time "0.12.2"]
+                 [clj-time "0.14.0"]
                  ;; Q: Does this make any sense in production?
                  ;; A: Well, it makes sense for the general runtime which
                  ;; is the primary goal.
@@ -19,53 +19,33 @@ b. lein managed dependencies"
                  ;; or a stand-alone executable.
                  ;; As it stands: absolutely. Especially if I stick with a browser-
                  ;; based renderer
-                 [com.cemerick/pomegranate "0.3.1" :exclusions [org.apache.httpcomponents/httpclient
+                 [com.cemerick/pomegranate "0.4.0" :exclusions [org.apache.httpcomponents/httpclient
                                                                 org.apache.httpcomponents/httpcore
                                                                 org.apache.maven.wagon/wagon-http
                                                                 org.codehaus.plexus/plexus-utils]]
-                 ;; For now, this next library needs to be distributed to
-                 ;; a local maven repo.
-                 ;; It seems like it should really take care of its handler
-                 ;; ...except that very likely means native libraries, so
-                 ;; it gets more complicated. Still, we shouldn't be worrying
-                 ;; about details like jeromq vs jzmq here.
-                 ;; Q: Does the reference to this really belong in here?
-                 ;; After all, there's a pretty strong chance that "only"
-                 ;; server and client will actually use it.
-                 ;; Then again, if that happens, web will only inherit
-                 ;; this through client. And, if it doesn't, renderer
-                 ;; will need this to talk to the stand-alone "client."
-                 ;; So the short answer is "Yes"
-                 ;; Longer answer is "Do I really want to depend on a native library?"
-                 ;; This answer to that question is rapidly turning to "No, but..."
-                 ;; It does make sense for the client/server (until/unless I just swap
-                 ;; it out for hornetq), but I'm writing an app that needs functionality
-                 ;; implemented in here, and I really don't want to install this for it.
-
-                 ;; If I'm serious about netty and CurveCP, this should just go away
-                 ;; TODO: Make that happen
-                 #_[com.jimrthy/cljeromq "0.1.0-SNAPSHOT" :exclusions [com.stuartsierra/component
-                                                                     org.clojure/clojure
-                                                                     prismatic/schema]]
-                 [com.jimrthy/component-dsl "0.1.2-SNAPSHOT" :exclusions [org.clojure/clojure]]
-                 [com.taoensso/timbre "4.7.4" :exclusions [org.clojure/clojure
+                 ;; TODO: Switch to integrant
+                 #_[com.jimrthy/component-dsl "0.1.2-SNAPSHOT" :exclusions [org.clojure/clojure]]
+                 [com.taoensso/timbre "4.10.0" :exclusions [org.clojure/clojure
                                                            org.clojure/tools.reader]]
                  ;; Q: Do I really want this?
+                 ;; A: Not really
                  [fullcontact/full.async "1.0.0" :exclusions [org.clojure/clojure
                                                               org.clojure/core.async]]
                  #_[gloss "0.2.5" :exclusions [byte-streams
                                              manifold
                                              potemkin]]
-                 [im.chit/hara.event "2.4.8" :exclusions [org.clojure/clojure]]
-                 [integrant "0.1.5"]
-                 [io.aviso/config "0.2.1" :exclusions [org.clojure/clojure
-                                                       prismatic/schema]]
+                 [im.chit/hara.event "2.5.10" :exclusions [org.clojure/clojure]]
+                 [integrant "0.6.1"]
+                 ;; This isn't playing with clojure 1.9
+                 #_[io.aviso/config "0.2.4" :exclusions [org.clojure/clojure
+                                                         prismatic/schema]]
+                 ;; They're up to 5.0.0.Alpha2, but that breaks aleph
                  [io.netty/netty-all "4.1.6.Final"]
                  ;; Because pomegranate and lein conflict.
                  ;; Try the latest versions to see how it works
-                 [org.apache.maven.wagon/wagon-http "2.10"]
-                 [org.apache.httpcomponents/httpcore "4.4.5"]
-                 [org.apache.httpcomponents/httpclient "4.5.2"]
+                 [org.apache.maven.wagon/wagon-http "3.0.0"]
+                 [org.apache.httpcomponents/httpcore "4.4.7"]
+                 [org.apache.httpcomponents/httpclient "4.5.3"]
 
                  ;; This is screwing up EDN serialization
                  ;; In particular dates.
@@ -75,16 +55,16 @@ b. lein managed dependencies"
                  ;; anyway.
                  ;; Next Q: Does this really gain anything?
                  #_[mvxcvi/puget "1.0.1" :exclusions [org.clojure/clojure]]
-                 [org.clojure/clojure "1.9.0-alpha14"]
-                 [org.clojure/core.async "0.2.395" :exclusions [org.clojure/clojure
+                 [org.clojure/clojure "1.9.0-alpha17"]
+                 [org.clojure/core.async "0.3.443" :exclusions [org.clojure/clojure
                                                                 org.clojure/tools.analyzer]]
                  [org.clojure/test.check "0.9.0"]
                  [org.clojure/tools.analyzer "0.6.9"]
-                 [org.clojure/tools.reader "1.0.0-beta3" :exclusions [org.clojure/clojure]]]
+                 [org.clojure/tools.reader "1.1.0" :exclusions [org.clojure/clojure]]]
   :java-source-paths ["java"]
   :jvm-opts [~(str "-Djava.library.path=/usr/local/lib:" (System/getenv "LD_LIBRARY_PATH"))]
 
-  :profiles {:dev {:dependencies [[integrant/repl "0.1.0"]
+  :profiles {:dev {:dependencies [[integrant/repl "0.2.0"]
                                   [org.clojure/java.classpath "0.2.3"
                                    :exclusions [org.clojure/clojure]]
                                   [org.clojure/test.check "0.9.0"]

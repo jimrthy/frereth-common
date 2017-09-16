@@ -1,9 +1,13 @@
 (ns com.frereth.common.util
   "Utilities to try to make my life easier"
+  ;; TODO: Eliminate any overlap between here and
+  ;; frereth-cp.util
+  ;; Assuming I ever get that into good enough shape
+  ;; to actually use it
   (:require [clojure.core.async :as async]
             [clojure.edn :as edn]
             [clojure.pprint :as pprint]
-            [clojure.spec :as s]
+            [clojure.spec.alpha :as s]
             [clojure.string :as string]
             [com.frereth.common.schema :as fr-sch]
             [hara.event :refer (raise)]
