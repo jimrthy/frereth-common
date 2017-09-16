@@ -21,6 +21,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Named constants for timeouts
 ;;; TODO: These really don't belong in here
+;;; (aside from lacking an indicator that the unit is milliseconds)
 (defn seconds [] 1000)  ; avoid collision w/ built-in second
 (defn minute [] (* 60 (seconds)))
 (defn hour [] (* 60 (minute)))
@@ -34,19 +35,6 @@
 
 (s/def ::reader (fr-sch/class-predicate Reader))
 (s/def ::pushback-reader (fr-sch/class-predicate PushbackReader))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;; Configuration
-
-;; Global function calls like this are bad.
-;; Especially since I'm looking at a
-;; white terminal background, as opposed to what
-;; most seem to expect
-;; TODO: Put this inside a component's start
-;; instead
-;; Bigger TODO: Figure out what replaced it
-(comment
-  (puget/set-color-scheme! :keyword [:bold :green]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Internal

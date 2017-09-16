@@ -2,13 +2,7 @@
   "This is really about higher-level messaging abstractions
 Originally written over 0mq. There's an open question about
   how useful they might be in the netty world."
-  ;; One way or another, there's no excuse for referencing
-  ;; cljeromq here.
-  ;; Except possibly as a questionable optimization.
-  ;; Well, and it was easy.
-  (:require #_[cljeromq.common :as mq-cmn]
-            #_[cljeromq.core :as mq]
-            [clojure.spec.alpha :as s]
+  (:require [clojure.spec.alpha :as s]
             [com.frereth.common.schema :as fr-sch]
             [com.frereth.common.util :as util]
             [hara.event :refer (raise)]

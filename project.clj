@@ -42,9 +42,6 @@ b. lein managed dependencies"
                  [org.clojure/test.check "0.9.0"]
                  [org.clojure/tools.analyzer "0.6.9"]
                  [org.clojure/tools.reader "1.1.0" :exclusions [org.clojure/clojure]]]
-  :java-source-paths ["java"]
-  :jvm-opts [~(str "-Djava.library.path=/usr/local/lib:" (System/getenv "LD_LIBRARY_PATH"))]
-
   :profiles {:dev {:dependencies [[integrant/repl "0.2.0"]
                                   [org.clojure/java.classpath "0.2.3"
                                    :exclusions [org.clojure/clojure]]
