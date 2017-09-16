@@ -1,9 +1,7 @@
-(def project 'frereth-cp)
+(def project 'com.frereth/common)
 (def version "0.0.1-SNAPSHOT")
 
-(set-env! :resource-paths #{"src"}
-          :source-paths   #{"dev" "dev-resources" "src" "test"}
-          :dependencies   '[[adzerk/boot-test "RELEASE" :scope "test"]
+(set-env! :dependencies   '[[adzerk/boot-test "RELEASE" :scope "test"]
                             [aleph "0.4.3"]
                             #_[buddy/buddy-core "1.1.1"]  ;; Q: Is there any point to this now?
                             [clj-time "0.14.0"]
@@ -44,10 +42,13 @@
                             [org.clojure/tools.logging "0.4.0"]
                             [org.clojure/tools.reader "1.1.0" :exclusions [org.clojure/clojure]]
                             [samestep/boot-refresh "0.1.0" :scope "test"]
-                            [tolitius/boot-check "0.1.4" :scope "test"]])
+                            [tolitius/boot-check "0.1.4" :scope "test"]]
+          :project 'com.frereth/common
+          :resource-paths #{"src"}
+          :source-paths   #{"dev" "dev-resources" "test"})
 
 (task-options!
- aot {:namespace   #{'frereth-cp.server 'frereth-cp.client}}
+ aot {:namespace   #{'com.frereth.common.system}}
  pom {:project     project
       :version     version
       :description "Shared frereth components"
@@ -56,7 +57,7 @@
       :scm         {:url "https://github.com/jimrthy/frereth-common"}
       :license     {"Eclipse Public License"
                     "http://www.eclipse.org/legal/epl-v10.html"}}
- jar {:file        (str "frereth-common-" version "-standalone.jar")})
+ jar {:file        (str "common-" version ".jar")})
 
 (require '[samestep.boot-refresh :refer [refresh]])
 (require '[tolitius.boot-check :as check])
@@ -69,6 +70,12 @@
   ;; TODO: Eliminate this discrepancy
   (let [dir (if (seq dir) dir #{"target"})]
     (comp (javac) (aot) (pom) (uber) (jar) (target :dir dir))))
+
+(deftask local-install
+  "Create a jar to go into your local maven repository"
+  [d dir PATH #{str} "the set of directories to write to (target)."]
+  (let [dir (if (seq dir) dir #{"target"})]
+    (comp (pom) (jar) (target :dir dir) (install))))
 
 (deftask cider-repl
   "Set up a REPL for connecting from CIDER"
