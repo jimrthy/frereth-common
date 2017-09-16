@@ -1,6 +1,5 @@
 (ns dev
-  "TODO: Really should figure out a way to share all the common pieces
-  (hint, hint)"
+  "TODO: Really should figure out a way to quit duplicating this everywhere"
   (:require [clojure.core.async :as async]
             [clojure.edn :as edn]
             [clojure.inspector :as i]
@@ -18,7 +17,8 @@
             [com.frereth.common.system :as sys]
             [com.frereth.common.util :as util]
             [clj-time.core :as dt]
-            [hara.event :refer (raise)]))
+            [hara.event :refer (raise)]
+            [integrant.repl :refer (clear go halt init reset reset-all)]))
 
 (def +frereth-component+
   "Just to help me track which REPL is which"
@@ -31,78 +31,15 @@
 
 (def system nil)
 
-(defn init
+(defn ctor
   "Constructs the current development system."
   []
   (set! *print-length* 50)
 
-  ;; integrant-repl handles the var-altering behavior
-  ;; for us
-  (comment
-      (let [ctx (mq/context 4)
-            socket-pair (mq/build-internal-pair! ctx)
-            reader (fn [sock]
-                     (println "Fake system reading")
-                     (mq/raw-recv! sock))
-            writer (fn [sock msg]
-                     (println "Fake system sending")
-                     (mq/send! sock msg))
-            parameters-tree {:event-loop {:context ctx
-                                          :ex-sock (:lhs socket-pair)
-                                          :in-chan (async/chan)
-                                          :external-reader reader
-                                          :external-writer writer}}
-            ;; Note that this fails on startup:
-            ;; since it's specifically designed to be a component nested among others,
-            ;; it fails when I try to create it at the top level.
-            ;; This is a bug/design flaw, but not really a primary concern.
-            ;; Actually, for this scenario, I could just call it directly and build a component
-            ;; from the definition the event-loop ctor returns
-            config ::event-loop {}]
-        (alter-var-root #'system
-                        (constantly (assoc (cpt-dsl/build config parameters-tree)
-                                           ;; fake-external is here to let me interact with the
-                                           ;; event loop.
-                                           :fake-external (:rhs socket-pair))))))
-  (throw (RuntimeException. "Have this do something sensible")))
+  (sys/build-event-loop-description {::sys/client-keys [:FIXME "generate this"]
+                                     ::sys/event-loop-name "For working in REPL"
+                                     ::sys/server-keys [:FIXME "ditto"]
+                                     ::sys/url {:what "goes here?"}}))
+(integrant.repl/set-prep! ctor)
 
-(defn start
-  "Starts the current development system."
-  []
-  (comment (alter-var-root #'system component/start))
-  (throw (RuntimeException. "Switch to that approach")))
-
-(defn stop
-  "Shuts down and destroys the current development system."
-  []
-  (comment
-    (alter-var-root #'system
-                    (fn [s] (when s (component/stop s)))))
-  (throw (RuntimeException. "This too")))
-
-(defn go-go
-  "Initializes the current development system and starts it running.
-Can't just call this go: that conflicts with a macro from core.async."
-  []
-  (println "Initializing system")
-  (init)
-  (println "Restarting system")
-  (start))
-
-(defn reset []
-  (println "Stopping")
-  (stop)
-  (println "Refreshing namespaces")
-  ;; This pulls up a window (in the current thread) which leaves
-  ;; emacs unusable. Get it at least not dying instantly from lein run,
-  ;; then make this play nicely with the main window in a background
-  ;; thread.
-  ;; Which doesn't really work at all on a Mac: more impetus than
-  ;; ever to get a REPL working there internally.
-  ;; But I don't need it yet.
-  (comment (raise :currently-broken))
-  (try
-    (refresh :after 'dev/go-go)
-    (catch clojure.lang.ExceptionInfo ex
-      (pprint ex)
-      (println "Refresh failed"))))
+(println "Now use go, halt, and reset to accomplish things")

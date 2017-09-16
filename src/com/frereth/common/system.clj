@@ -44,18 +44,19 @@ So this abstraction absolutely does belong in common.
 
 It seems to make less sense under the system namespace, but
 I'm not sure which alternatives make more sense."
-  [_ {:keys [client-keys
-             context
-             direction
-             event-loop-name
-             server-key
-             socket-type
-             thread-count
-             url]
+  [_ {:keys [::client-keys
+             ::context
+             ::direction
+             ::event-loop-name
+             ::server-key
+             ::socket-type
+             ::thread-count
+             ::url]
       :or {direction :connect
            socket-type :dealer
            thread-count 2}
       :as opts}]
+  {:pre [event-loop-name]}
   (let [url #_(cond-> url
               (not (:cljeromq.common/zmq-protocol url)) (assoc :cljeromq.common/zmq-protocol :tcp)
               (not (:cljeromq.common/zmq-address url)) (assoc :cljeromq.common/zmq-address [127 0 0 1])
