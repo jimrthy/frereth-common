@@ -39,8 +39,8 @@ b. lein managed dependencies"
                  [org.clojure/clojure "1.9.0-alpha17"]
                  [org.clojure/core.async "0.3.443" :exclusions [org.clojure/clojure
                                                                 org.clojure/tools.analyzer]]
-                 [org.clojure/test.check "0.9.0"]
                  [org.clojure/tools.analyzer "0.6.9"]
+                 [org.clojure/test.check "0.9.0"]
                  [org.clojure/tools.reader "1.1.0" :exclusions [org.clojure/clojure]]]
   :profiles {:dev {:dependencies [[integrant/repl "0.2.0"]
                                   [org.clojure/java.classpath "0.2.3"
