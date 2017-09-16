@@ -1,4 +1,4 @@
-(ns dev
+(ns user
   "TODO: Really should figure out a way to quit duplicating this everywhere"
   (:require [clojure.core.async :as async]
             [clojure.edn :as edn]
