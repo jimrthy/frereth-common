@@ -11,10 +11,7 @@ and curvecp.
 Keeping it around as/for reference for now, but it really
 should just go away if/when I decide to really move forward
 with this branch."
-  (:require #_[cljeromq.common :as mq-cmn]
-            #_[cljeromq.core :as mq]
-            #_[cljeromq.curve]
-            [clojure.core.async :as async :refer (>! >!!)]
+  (:require [clojure.core.async :as async :refer (>! >!!)]
             [clojure.edn :as edn]
             [clojure.pprint :refer (pprint)]
             [clojure.spec.alpha :as s]

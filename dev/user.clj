@@ -29,8 +29,6 @@
 ;; ridiculously long
 (require '[com.frereth.common.async-zmq-test :as azt])
 
-(def system nil)
-
 (defn ctor
   "Constructs the current development system."
   []

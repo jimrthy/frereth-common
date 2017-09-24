@@ -18,14 +18,14 @@
 (s/fdef build-event-loop-description
         ;; FIXME: These specs are broken.
         ;; Restore them when I can use my CurveCP library
-        :args (s/cat :options (s/keys :unq-opt {::client-keys #_client-keys any?
-                                                ; ::direction :cljeromq.common/direction
-                                                ::server-key #_::public-key any?
-                                                ; ::socket-type :cljeromq.common/socket-type
-                                                }
-                                      :unq-req {::context :com.frereth.common.zmq-socket/context-wrapper
-                                                ::event-loop-name string?
-                                                ::url #_::url any?}))
+        :args (s/cat :options (s/keys :opt {::client-keys #_client-keys any?
+                                        ; ::direction :cljeromq.common/direction
+                                            ::server-key #_::public-key any?
+                                        ; ::socket-type :cljeromq.common/socket-type
+                                            }
+                                      :req {::context :com.frereth.common.zmq-socket/context-wrapper
+                                            ::event-loop-name string?
+                                            ::url #_::url any?}))
         ;; Q: Do I want to try to spec the return value?
         :ret any?)
 (defn build-event-loop-description
