@@ -4,8 +4,9 @@
   (require 'boot.repl)
 
   (swap! @(resolve 'boot.repl/*default-dependencies*)
-         concat '[[org.clojure/tools.nrepl "0.2.12"]
-                  [cider/cider-nrepl "0.15.0"]
+         concat '[[cider/cider-nrepl "0.15.1"]
+                  [com.billpiel/sayid "0.0.15"]
+                  [org.clojure/tools.nrepl "0.2.13"]
                   [refactor-nrepl "2.3.1"]])
 
   (swap! @(resolve 'boot.repl/*default-middleware*)

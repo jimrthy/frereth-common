@@ -22,13 +22,14 @@ b. lein managed dependencies"
                  [com.cemerick/pomegranate "0.4.0" :exclusions [org.apache.httpcomponents/httpclient
                                                                 org.apache.httpcomponents/httpcore
                                                                 org.apache.maven.wagon/wagon-http
-                                                                org.codehaus.plexus/plexus-utils]]
+                                                                org.codehaus.plexus/plexus-utils
+                                                                org.slf4j/jcl-over-slf4j]]
                  [com.taoensso/timbre "4.10.0" :exclusions [org.clojure/clojure
                                                            org.clojure/tools.reader]]
                  [im.chit/hara.event "2.5.10" :exclusions [org.clojure/clojure]]
                  [integrant "0.6.1"]
                  ;; They're up to 5.0.0.Alpha2, but that breaks aleph
-                 [io.netty/netty-all "4.1.6.Final"]
+                 [io.netty/netty-all "4.1.9.Final"]
                  ;; Because pomegranate and lein conflict.
                  ;; Try the latest versions to see how it works
                  [org.apache.maven.wagon/wagon-http "3.0.0"]
