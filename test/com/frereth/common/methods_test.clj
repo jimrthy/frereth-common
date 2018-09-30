@@ -1,5 +1,5 @@
 (ns com.frereth.common.methods-test
-  (:require [clojure.spec :as s]
+  (:require [clojure.spec.alpha :as s]
             [clojure.test :refer (deftest is testing)]
             [com.frereth.common.methods :as m]))
 

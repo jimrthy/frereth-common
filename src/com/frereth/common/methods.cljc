@@ -14,7 +14,7 @@ on debugging what happens in the middle of those in which
 order.
 
 Time will tell whether this proves to be an improvement."
-  (:require [clojure.spec :as s]
+  (:require [clojure.spec.alpha :as s]
             [clojure.tools.logging :as log])
   (:import clojure.lang.ExceptionInfo))
 

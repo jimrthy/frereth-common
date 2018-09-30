@@ -7,19 +7,17 @@ everything back into a single repository.
 
 ## Usage
 
-lein install
+    boot pom jar install
 
-Although you probably don't want to actually use it.
+Then add ["com.frereth/common "0.0.1-SNAPSHOT"] to your dependencies.
 
-## Notes
+## TODO
 
-To measure up to its name, this really should be cross-platform.
-
-I'm not sure how realistic that would be for most of it.
+Still need to document the actual programmatic usage.
 
 ## License
 
-Copyright © 2014-2017 James Gatannah
+Copyright © 2014-2018 James Gatannah
 
 Distributed under the Eclipse Public License either version 1.0 or (at
 your option) any later version.

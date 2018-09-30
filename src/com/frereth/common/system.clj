@@ -5,29 +5,36 @@
             [com.frereth.common.async-component :as async-cpt]
             [com.frereth.common.async-zmq :as async-zmq]
             #_[com.frereth.common.curve.shared :as curve]
+            [com.frereth.common.zmq-socket :as zmq-sock]
             [hara.event :refer (raise)]
             [integrant.core :as ig]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Specs
 
+(s/def ::client-keys any?)
+(s/def ::server-key any?)
+(s/def ::context ::zmq-sock/ctx)
+(s/def ::event-loop-name string?)
+(s/def ::url any?)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Public
 
 (s/fdef build-event-loop-description
-        ;; FIXME: These specs are broken.
-        ;; Restore them when I can use my CurveCP library
-        :args (s/cat :options (s/keys :opt {::client-keys #_client-keys any?
-                                        ; ::direction :cljeromq.common/direction
-                                            ::server-key #_::public-key any?
-                                        ; ::socket-type :cljeromq.common/socket-type
-                                            }
-                                      :req {::context :com.frereth.common.zmq-socket/context-wrapper
-                                            ::event-loop-name string?
-                                            ::url #_::url any?}))
-        ;; Q: Do I want to try to spec the return value?
-        :ret any?)
+  ;; FIXME: These specs are broken.
+  ;; Restore them when I can use my CurveCP library
+  :args (s/cat :options (s/keys :opt [::client-keys
+                                      ::direction
+                                      ::server-key
+                                      ::socket-type
+                                      ::thread-count]
+                                :req [::context
+                                      ::event-loop-name
+                                      ::url]))
+  ;; Q: Do I want to try to spec the return value?
+  ;; (Which is the actual description of the system to start
+  :ret any?)
 (defn build-event-loop-description
   "Return a component description that's suitable for nesting into yours to pass along to cpt-dsl/build
 
@@ -44,18 +51,18 @@ So this abstraction absolutely does belong in common.
 
 It seems to make less sense under the system namespace, but
 I'm not sure which alternatives make more sense."
-  [_ {:keys [::client-keys
-             ::context
-             ::direction
-             ::event-loop-name
-             ::server-key
-             ::socket-type
-             ::thread-count
-             ::url]
-      :or {direction :connect
-           socket-type :dealer
-           thread-count 2}
-      :as opts}]
+  [{:keys [::client-keys
+           ::context
+           ::direction
+           ::event-loop-name
+           ::server-key
+           ::socket-type
+           ::thread-count
+           ::url]
+    :or {direction :connect
+         socket-type :dealer
+         thread-count 2}
+    :as opts}]
   {:pre [event-loop-name]}
   (let [url #_(cond-> url
               (not (:cljeromq.common/zmq-protocol url)) (assoc :cljeromq.common/zmq-protocol :tcp)

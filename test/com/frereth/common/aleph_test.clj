@@ -9,33 +9,39 @@
             [manifold.stream :as strm]))
 
 (deftest count-messages
+  ;; This test is thoroughly broken.
   (testing "Count minimalist requests/responses"
     (let [counter (atom 0)
           port 12017
           handler (fn [msg]
+                    ;; No messages reaching here
                     (println "Message received:" msg)
                     (swap! counter inc))
           server (aleph/start-server! (aleph/request-response handler)
                                       port)]
       (try
         (let [client (aleph/start-client! "localhost" port)]
-          (doseq [n (range 10)]
-            (aleph/put! client n))
-          (println "\nMessages sent\n")
-          (doseq [n (range 10)]
-            (let [m (aleph/take! client ::timed-out 500)]
-              (is (= (inc n) m))))
-          ;; Q: Does closing the client (whatever that means)
-          ;; accomplish the same thing?
-          ;; (That doesn't seem to be a thing)
-          (aleph/put! client ::none))
-        (is (= @counter 10))
-        (finally (.close server))))))
+          (try
+            (doseq [n (range 10)]
+              (aleph/put! client n))
+            (println "\nMessages sent\n")
+            (doseq [n (range 10)]
+              (let [m (aleph/take! client ::timed-out 500)]
+                ;; These just timeout
+                (is (= (inc n) m))))
+            ;; Q: Does closing the client (whatever that means)
+            ;; accomplish the same thing?
+            ;; (That doesn't seem to be a thing)
+            (aleph/put! client ::none)
+            (finally (aleph/close! client)))
+          (is (= @counter 10)))
+        (finally (aleph/close! server))))))
 (comment
   (count-messages))
 
 (deftest test-routing
-  ;; This approach no longer makes any real sense, assuming it ever did
+  ;; This approach no longer makes any real sense, assuming it ever did.
+  ;; And the test is thoroughly broken.
   (testing "Router"
     (let [connections (atom {})
           port 12081

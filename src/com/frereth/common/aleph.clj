@@ -1,6 +1,7 @@
 (ns com.frereth.common.aleph
   "Wrappers for my aleph experiments"
-  (:require [aleph.udp :as udp]
+  (:require [aleph.tcp :as tcp]
+            [aleph.udp :as udp]
             [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
             [manifold.deferred :as deferred]
@@ -12,42 +13,22 @@
 (s/def ::server any?)
 (s/def ::stream any?)
 
-(comment
-  (defn wrap-gloss-protocol
-    "Use the gloss library as middleware to apply a protocol to a raw stream"
-    [protocol s]
-    (let [out (stream/stream)]
-      (stream/connect
-       (stream/map #(gloss-io/encode protocol %) out)
-       s)
-      (stream/splice out
-                     (gloss-io/decode-stream s protocol)))))
-
-(comment
-  (defn simplest
-    "Encode a length and a string into a packet
-  Then translate the string into EDN.
-  This approach is rife for abuse. What happens
-  if one side lies about the string length? Or
-  sends garbage?"
-    [stream]
-    (comment
-      (let [protocol (gloss/compile-frame
-                      (gloss/finite-frame :uint32
-                                          (gloss/string :utf-8))
-                      pr-str
-                      edn/read-string)]
-        (wrap-gloss-protocol protocol stream)))))
-
 ;; None of the rest of these belong in here...do they?
 (defn put!
   "Really just a convenience wrapper to cut down on the number
 of namespaces clients have to :require to use this one"
   [stream msg]
-  (comment
-    (stream/put! stream msg))
-  (throw (Exception. "Replace this")))
+  (stream/put! stream msg))
 
+(s/fdef take!
+  :args (s/or :full (s/cat :stream stream/stream?
+                           :default any?
+                           :timeout number?)
+              :default (s/cat :stream stream/stream?
+                              :default any?)
+              :base (s/cat :stream stream/stream?))
+  ;; Q: Is this accurate?
+  :ret (s/nilable bytes?))
 (defn take!
   "Note that this approach doesn't really compose well.
 
@@ -55,18 +36,12 @@ Since everything else in manifold expects the deferred.
 
 That makes this much less useful"
   ([stream]
-   (comment
-     @(stream/take! stream))
-   (throw (Exception. "Replace this")))
+   @(stream/take! stream))
   ([stream default]
-   (comment
-     @(stream/take! stream default))
-   (throw (Exception. "Replace this")))
+   @(stream/take! stream default))
   ([stream default timeout]
-   (comment
-     (let [deferred (stream/take! stream default)]
-       (deref deferred timeout ::timeout)))
-   (throw (Exception. "Replace this"))))
+   (let [deferred (stream/take! stream default)]
+     (deref deferred timeout ::timeout))))
 
 (defn router-event-loop
   "Sets up an event loop like a 0mq router socket
@@ -126,31 +101,27 @@ At least conceptually."
                                    :info any?)))
 (defn request-response
   "This works fine for request/response style messaging,
-  but seems pretty useless for real async exchanges.
-
-  i.e. How am I supposed to send arbitrary messages back
-  to the client at arbitrary times?"
+  but seems pretty useless for real async exchanges."
   [f]
   (fn [s info]
-    (comment
-      (deferred/chain
-        (deferred/loop []
-          (-> (deferred/let-flow [msg (stream/take! s ::none)]
-                (when-not (identical? ::none msg)
-                  (deferred/let-flow [msg' (deferred/future (f msg))
-                                      result (put! s msg')]
-                    (when result
-                      (deferred/recur)))))
-              (deferred/catch
-                  (fn [ex]
-                    (println "Server Oops!")
-                    (put! s {:error (.getMessage ex)
-                             :type (-> ex class str)})
-                    ;; Q: Is this really what should happen?
-                    (stream/close! s)))))
-        (fn [_]
-          ;; Actually, I should be able to clean up in here
-          (println "Client connection really exited"))))
+    (deferred/chain
+      (deferred/loop []
+        (-> (deferred/let-flow [msg (stream/take! s ::none)]
+              (when-not (identical? ::none msg)
+                (deferred/let-flow [msg' (deferred/future (f msg))
+                                    result (put! s msg')]
+                  (when result
+                    (deferred/recur)))))
+            (deferred/catch
+                (fn [ex]
+                  (println "Server Oops!\n" ex)
+                  (put! s {:error (.getMessage ex)
+                           :type (-> ex class str)})
+                  ;; Q: Is this really what should happen?
+                  (stream/close! s)))))
+      (fn [_]
+        ;; Actually, I should be able to clean up in here
+        (println "Client connection really exited")))
     ;; That loop's running in the background.
     (println "req-rsp loop started")))
 
@@ -159,22 +130,76 @@ At least conceptually."
   [^java.io.Closeable x]
   (.close x))
 
-(comment
-  (defn start-deferred-client!
-    [host port ssl? insecure?]
-    (comment (deferred/chain (tcp/client {:host host
-                                          :port port
-                                          :ssl? ssl?
-                                          :insecure? insecure?})
-               ;; Honestly, we need a way to specify this.
-               ;; Except that this is the way, right?
-               #(simplest %)))))
-
+(s/fdef start-deferred-client!
+  ;; The specs on those are very loose
+  :args (s/or :full (s/cat :host string?
+                           :port int?
+                           :ssl? boolean?
+                           :insecure? boolean?)
+              :default (s/cat :host string?
+                              :port int?))
+  :ret stream/stream?)
 (defn start-client!
-  "Apparently this doesn't need to be closed"
+  "Starts a dumb, limited TCP stream. Read/write clojure to/from it.
+
+  Objects are limited to 16K of EDN serialization.
+
+  So really just an example of how things should work."
   ([host port ssl? insecure?]
-   (comment
-     @(start-deferred-client! host port ssl? insecure?)))
+   (let [strm (tcp/client {:host host
+                           :port port
+                           :ssl? ssl?
+                           :insecure? insecure?})
+         source (stream/stream)
+         sink (stream/stream)
+         acc (atom {::pending 0
+                    ::received []})]
+     ;; Read EDN from the stream
+     (stream/connect-via strm
+                         (fn [msg]
+                           (loop [rcvd (conj (::received @acc) msg)
+                                  pending (::pending @acc)]
+                             (if (>= (count rcvd) pending)
+                               (let [[actual remaining] (split-at pending rcvd)
+                                     s (String. (bytes actual))
+                                     ;; FIXME: Error handling
+                                     o (edn/read-string s)
+                                     pending (as-> remaining x
+                                               (take 2 x)
+                                               (bit-or (bit-shift-left (first x) 8)
+                                                       (second x)))
+                                     success @(stream/try-put! source o 25 ::timed-out)]
+                                 ;; FIXME: Error handling
+                                 (comment
+                                   (is success)
+                                   (is (not= success ::timed-out)))
+                                 (if success
+                                   (recur (vec (drop 2 remaining))
+                                          pending)
+                                   ;; Signal that downstream closed
+                                   nil))
+                               (swap! acc
+                                      assoc
+                                      ::pending pending
+                                      ::received rcvd))))
+                         source)
+     (stream/connect-via sink
+                         (fn [o]
+                           (let [s (pr-str o)
+                                 bs (.getBytes s)
+                                 n (count bs)
+                                 l1 (mod n 256)
+                                 l2 (quot n 256)
+                                 len (byte-array [l2 l1])]
+                             (stream/put! strm len)
+                             (let [success @(stream/try-put! strm bs 25 ::timed-out)]
+                               ;; FIXME: Error handling
+                               (comment
+                                 (is success)
+                                 (is (not= success ::timed-out)))
+                               (if success success nil))))
+                         strm)
+     (stream/splice sink source)))
   ([host port]
    (start-client! host port false false)))
 
@@ -186,11 +211,11 @@ At least conceptually."
 (defn start-server!
   "Starts a server that listens on port and calls handler"
   ([handler port ssl-context]
-   (comment (tcp/start-server
-             (fn [s info]
-               (println (java.util.Date.) "Outer server handler")
-               (handler (comment (simplest s)) info))
-             {:port port
-              :ssl-context ssl-context})))
+    (tcp/start-server
+     (fn [s info]
+       (println (java.util.Date.) "Outer server handler")
+       (handler (comment (simplest s)) info))
+     {:port port
+      :ssl-context ssl-context}))
   ([handler port]
    (start-server! handler port nil)))
